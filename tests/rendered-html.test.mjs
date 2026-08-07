@@ -44,6 +44,17 @@ test("computes belt headway and route travel time independently", async () => {
   assert.throws(() => timing.beltTravelTicks(0), RangeError);
 });
 
+test("maps the long-press radial gesture to stable directional actions", async () => {
+  const radial = await import(new URL("../lib/radial-menu.ts", import.meta.url));
+  assert.equal(radial.RADIAL_HOLD_DELAY_MS, 420);
+  assert.equal(radial.RADIAL_CONFIRM_DELAY_MS, 210);
+  assert.equal(radial.radialSelection(0, -50).action, "rotate");
+  assert.equal(radial.radialSelection(50, 0).action, "move");
+  assert.equal(radial.radialSelection(0, 50).action, "copy");
+  assert.equal(radial.radialSelection(-50, 0).action, "delete");
+  assert.equal(radial.radialSelection(8, 8).action, null);
+});
+
 test("keeps the current pass belt-only with editable routes and real inventory flow", async () => {
   const [page, css, timing] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
@@ -78,6 +89,13 @@ test("keeps the current pass belt-only with editable routes and real inventory f
   assert.match(page, /aria-label="放入数量"/);
   assert.match(page, /放入输入库存/);
   assert.match(page, /className="delete-action"/);
+  assert.match(page, /startDeviceRadial/);
+  assert.match(page, /setPointerCapture/);
+  assert.match(page, /phase:"confirming"/);
+  assert.match(page, /liveDraftRoute/);
+  assert.match(page, /findAutoPath\(start,target,cols,rows,blocked\)/);
+  assert.match(page, /data-progress=\{progress\.toFixed\("?3"?\)\}/);
+  assert.doesNotMatch(page, /animateMotion/);
   assert.match(page, /key === "delete"\|\|key === "backspace"/);
   assert.match(page, /DEVICE_CATEGORIES:DeviceCategory\[\]=\["全部","资源开采","仓储存取","基础生产","合成制造","电力供应","功能设备","战斗辅助","种植调配"\]/);
   assert.match(page, /仓库取货口输出物品/);
@@ -88,6 +106,9 @@ test("keeps the current pass belt-only with editable routes and real inventory f
   assert.match(css, /\.draft-waypoint/);
   assert.match(css, /\.port-marker\.snap-target/);
   assert.match(css, /\.placement-snap/);
+  assert.match(css, /\.radial-menu/);
+  assert.match(css, /@keyframes radialConfirm/);
+  assert.match(css, /\.draft-cursor/);
   assert.match(css, /\.device-menu/);
   assert.match(css, /\.cell-glyph\.root\.inventory-full/);
   assert.match(css, /\.editor-tools/);
