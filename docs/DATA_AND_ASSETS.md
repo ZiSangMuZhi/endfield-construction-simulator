@@ -26,9 +26,14 @@ Alpha 版使用文字与 CSS 几何符号作为临时图标，避免让占位素
 - https://endfield.games/en/factory/buildings/furnance-1/
 - https://endfield.games/en/factory/buildings/component-mc-1/
 
+供电桩按 `2×2` 占地实现。公开资料可确认其不耗电并为范围内设备无线供电；当前 `12×12` 网格范围采用参考规划工具中的可审计配置，作为规划数据而非官方公开数值。来源：
+
+- https://gl.ali213.net/html/2026-1/1742509_57.html
+- https://github.com/eddy3721/arknights-endfield-bp-tool/blob/main/src/config/machines.ts
+
 ## 简体中文命名
 
-设备目录优先采用简体中文资料中的游戏内名称。当前已核对：`精炼炉`、`配件机`、`仓库取货口`、`储液罐`、`传送带`、`管道`。配方示例采用 `蓝铁矿 → 蓝铁块` 与 `蓝铁块 → 铁制零件`。主要核对来源为终末地 Wiki 的简体中文工厂教程与设备页：
+设备目录优先采用简体中文资料中的游戏内名称。当前固体生产链使用：`精炼炉`、`配件机`、`仓库取货口`、`供电桩`、`传送带`。配方示例采用 `蓝铁矿 → 蓝铁块` 与 `蓝铁块 → 铁制零件`。主要核对来源为终末地 Wiki 的简体中文工厂教程与设备页：
 
 - https://endfield.games/zh-Hans/tutorials/factory/
 - https://endfield.games/zh-Hans/factory/buildings/furnance-1/
