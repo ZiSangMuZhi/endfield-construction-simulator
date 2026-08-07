@@ -6,8 +6,8 @@ type Kind = "belt" | "pipe" | "refiner" | "fitter" | "tank" | "depot";
 type Cell = { kind: Kind; rotation: number; id: string; root?: boolean };
 type Grid = Record<string, Cell>;
 
-const COLS = 18;
-const ROWS = 12;
+const DEFAULT_COLS = 18;
+const DEFAULT_ROWS = 12;
 const keyOf = (x: number, y: number) => `${x},${y}`;
 
 const tools: { kind: Kind; label: string; group: string; glyph: string; desc: string }[] = [
@@ -59,6 +59,12 @@ export default function Home() {
   const [tick, setTick] = useState(0);
   const [drawing, setDrawing] = useState(false);
   const [notice, setNotice] = useState("演示蓝图已载入");
+  const [cols, setCols] = useState(DEFAULT_COLS);
+  const [rows, setRows] = useState(DEFAULT_ROWS);
+  const [gridOpacity, setGridOpacity] = useState(0.1);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [panning, setPanning] = useState<{ x:number; y:number; ox:number; oy:number } | null>(null);
 
   useEffect(() => {
     if (!running) return;
@@ -83,7 +89,7 @@ export default function Home() {
         return { ...old, [key]: { kind: selected, rotation: 0, id: crypto.randomUUID(), root: true } };
       }
       const size = selected === "refiner" || selected === "fitter" ? 3 : 1;
-      if (x + size > COLS || y + size > ROWS) return old;
+      if (x + size > cols || y + size > rows) return old;
       const cells = Array.from({ length: size * size }, (_, i) => keyOf(x + i % size, y + Math.floor(i / size)));
       if (cells.some((k) => old[k])) { setNotice("设备占地与现有设施冲突"); return old; }
       const id = crypto.randomUUID(); const next = { ...old };
@@ -135,18 +141,30 @@ export default function Home() {
         <section className="canvas-panel">
           <div className="canvas-toolbar">
             <div><span className="live-dot" /> AIC-01 / 规划层</div>
-            <div className="scale">−　100%　＋</div>
+            <div className="canvas-controls">
+              <button onClick={() => setZoom(Math.max(.55, zoom-.1))}>−</button><span>{Math.round(zoom*100)}%</span><button onClick={() => setZoom(Math.min(1.7, zoom+.1))}>＋</button>
+              <details className="settings"><summary>画布设置</summary><div className="settings-popover">
+                <label><span>网格对比度 <b>{Math.round(gridOpacity*100)}%</b></span><input type="range" min="0.03" max="0.35" step="0.01" value={gridOpacity} onChange={e=>setGridOpacity(Number(e.target.value))}/></label>
+                <label><span>缩放 <b>{Math.round(zoom*100)}%</b></span><input type="range" min="0.55" max="1.7" step="0.05" value={zoom} onChange={e=>setZoom(Number(e.target.value))}/></label>
+                <div className="size-inputs"><label>列数<input type="number" min="12" max="32" value={cols} onChange={e=>setCols(Math.max(12,Math.min(32,Number(e.target.value))))}/></label><label>行数<input type="number" min="8" max="24" value={rows} onChange={e=>setRows(Math.max(8,Math.min(24,Number(e.target.value))))}/></label></div>
+                <button onClick={()=>{setPan({x:0,y:0});setZoom(1)}}>重置视图</button><small>Alt + 左键 / 鼠标中键拖动画布</small>
+              </div></details>
+            </div>
           </div>
-          <div className="grid-wrap">
+          <div className="grid-wrap" style={{"--grid-opacity":gridOpacity} as React.CSSProperties}
+            onMouseDown={e=>{if(e.button===1||e.altKey){e.preventDefault();setPanning({x:e.clientX,y:e.clientY,ox:pan.x,oy:pan.y})}}}
+            onMouseMove={e=>{if(panning)setPan({x:panning.ox+e.clientX-panning.x,y:panning.oy+e.clientY-panning.y})}}
+            onMouseUp={()=>setPanning(null)} onMouseLeave={()=>setPanning(null)}
+            onWheel={e=>{if(e.ctrlKey){e.preventDefault();setZoom(z=>Math.max(.55,Math.min(1.7,z-e.deltaY*.001)))}}}>
             <div className="axis axis-y">12<br/>08<br/>04<br/>00</div>
-            <div className="grid" style={{ gridTemplateColumns: `repeat(${COLS}, 1fr)` }} onMouseLeave={() => setDrawing(false)}>
-              {Array.from({ length: COLS * ROWS }).map((_, index) => {
-                const x = index % COLS; const y = Math.floor(index / COLS); const cell = grid[keyOf(x, y)];
+            <div className={`grid ${panning ? "is-panning" : ""}`} style={{ gridTemplateColumns: `repeat(${cols}, 1fr)`, aspectRatio:`${cols}/${rows}`, transform:`translate(${pan.x}px,${pan.y}px) scale(${zoom})` }} onMouseLeave={() => setDrawing(false)}>
+              {Array.from({ length: cols * rows }).map((_, index) => {
+                const x = index % cols; const y = Math.floor(index / cols); const cell = grid[keyOf(x, y)];
                 const status = cell ? cellStatus(cell, running) : "";
-                const mask = cell && isTransport(cell.kind) ? [y > 0 && grid[keyOf(x,y-1)]?.kind === cell.kind ? "n":"", x < COLS-1 && grid[keyOf(x+1,y)]?.kind === cell.kind ? "e":"", y < ROWS-1 && grid[keyOf(x,y+1)]?.kind === cell.kind ? "s":"", x > 0 && grid[keyOf(x-1,y)]?.kind === cell.kind ? "w":""].join("") : "";
+                const mask = cell && isTransport(cell.kind) ? [y > 0 && grid[keyOf(x,y-1)]?.kind === cell.kind ? "n":"", x < cols-1 && grid[keyOf(x+1,y)]?.kind === cell.kind ? "e":"", y < rows-1 && grid[keyOf(x,y+1)]?.kind === cell.kind ? "s":"", x > 0 && grid[keyOf(x-1,y)]?.kind === cell.kind ? "w":""].join("") : "";
                 const machine = cell?.kind === "refiner" ? { recipe:"蓝铁矿 ×1 → 蓝铁块 ×1", state:running ? "生产中" : "已暂停", blocked:"否" } : cell?.kind === "fitter" ? { recipe:"蓝铁块 ×1 → 铁制零件 ×1", state:running ? "缺料等待" : "已暂停", blocked:"否" } : null;
                 return <button key={index} className={`cell ${cell ? `placed ${cell.kind}` : ""} ${status}`} aria-label={`${x},${y}${cell ? ` ${cell.kind}` : ""}`}
-                  onMouseDown={() => { setDrawing(true); paint(x, y); }} onMouseEnter={() => drawing && paint(x, y)} onMouseUp={() => setDrawing(false)}
+                  onMouseDown={(e) => { if(e.button===1||e.altKey)return; setDrawing(true); paint(x, y); }} onMouseEnter={() => drawing && paint(x, y)} onMouseUp={() => setDrawing(false)}
                   onContextMenu={(e) => { e.preventDefault(); setGrid((old) => { const target=old[keyOf(x,y)]; if(!target)return old; const next={...old}; Object.keys(next).forEach(k=>{if(next[k].id===target.id)delete next[k]}); return next; }); }}>
                     {cell && isTransport(cell.kind) && <span className="transport-track" data-mask={mask || "e"}><i className="seg n"/><i className="seg e"/><i className="seg s"/><i className="seg w"/>{running && (x+y)%2===0 && <b className={`item-icon ${cell.kind === "pipe" ? "fluid" : "solid"}`}>{cell.kind === "pipe" ? "●" : "◆"}</b>}</span>}
                     {cell && !isTransport(cell.kind) && <><span className={`cell-glyph ${cell.root ? "root" : "part"}`}>{cell.root && <><b>{tools.find((t) => t.kind === cell.kind)?.glyph}</b>{machine && <span className="machine-overlay"><strong>{machine.recipe}</strong><small className={status}>● {machine.state}</small><em>阻塞：{machine.blocked}</em></span>}</>}</span>{cell.root && status === "waiting" && <span className="wait-ring" />}</>}
@@ -155,7 +173,7 @@ export default function Home() {
             </div>
             <div className="axis axis-x">00　　　04　　　08　　　12　　　16</div>
           </div>
-          <div className="status-strip"><span>{notice}</span><span>网格 {COLS} × {ROWS}</span><span>占用 {Math.round(Object.keys(grid).length / (COLS * ROWS) * 100)}%</span></div>
+          <div className="status-strip"><span>{notice}</span><span>网格 {cols} × {rows}</span><span>占用 {Math.round(Object.keys(grid).filter(k=>{const [x,y]=k.split(',').map(Number);return x<cols&&y<rows}).length / (cols * rows) * 100)}%</span></div>
         </section>
 
         <aside className="inspector panel">
