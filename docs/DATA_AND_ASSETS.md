@@ -33,4 +33,6 @@ Alpha 版使用文字与 CSS 几何符号作为临时图标，避免让占位素
 - https://endfield.games/zh-Hans/tutorials/factory/
 - https://endfield.games/zh-Hans/factory/buildings/furnance-1/
 
+占地补充核对：参考 `eddy3721/arknights-endfield-bp-tool` 的 [`src/config/machines.ts`](https://github.com/eddy3721/arknights-endfield-bp-tool/blob/main/src/config/machines.ts)，仓库取货口为 `1×3`，单个输出端口位于中间格；本项目按相同占地与旋转规则实现。传送带额定带宽按用户提供的当前游戏数据记为 `30/min`。
+
 其他设备在来源未核实前仍按占位数据处理，并在 UI/数据层标明可信度。

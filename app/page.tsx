@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 type Kind = "belt" | "pipe" | "refiner" | "fitter" | "tank" | "depot";
 type Direction = 0 | 1 | 2 | 3;
 type PipeContent = "clean-water" | "liquid-xiranite" | "sewage";
-type Cell = { kind: Kind; rotation: Direction; entry?: Direction; id: string; root?: boolean; partX?: number; partY?: number; size?: number; content?: PipeContent };
+type Cell = { kind: Kind; rotation: Direction; entry?: Direction; id: string; root?: boolean; partX?: number; partY?: number; size?: number; width?: number; height?: number; content?: PipeContent };
 type Grid = Record<string, Cell>;
 
 const DEFAULT_COLS = 18;
@@ -23,6 +23,20 @@ const directionBetween = (fromX: number, fromY: number, toX: number, toY: number
 
 type FlowRoute = { id: string; kind: "belt" | "pipe"; cells: { x:number; y:number; cell:Cell }[]; path: string };
 type PickedEntity = { id:string; mode:"move" | "copy"; cells:{ dx:number; dy:number; cell:Cell }[] };
+type MachineState = { id:string; kind:"refiner"|"fitter"; status:"idle"|"running"|"waiting"|"starved"|"blocked"; progress:number; remaining:string; hasInput:boolean; hasOutput:boolean };
+
+function arrowAngle(cell: Cell) {
+  if (cell.entry == null) return cell.rotation * 90;
+  const incoming = DELTAS[opposite(cell.entry)], outgoing = DELTAS[cell.rotation];
+  const x = incoming[0] + outgoing[0], y = incoming[1] + outgoing[1];
+  return x === 0 && y === 0 ? cell.rotation * 90 : Math.atan2(y,x) * 180 / Math.PI;
+}
+
+function entityPhase(id: string, cycle: number) {
+  let hash=0;
+  for (const character of id) hash=(hash*31+character.charCodeAt(0))>>>0;
+  return hash%cycle;
+}
 
 function roundedPath(points: { x:number; y:number; cell:Cell }[]) {
   if (!points.length) return "";
@@ -80,16 +94,18 @@ function getFlowRoutes(grid: Grid, kind: "belt" | "pipe"): FlowRoute[] {
 }
 
 const tools: { kind: Kind; label: string; group: string; glyph: string; desc: string; image?: string }[] = [
-  { kind: "belt", label: "传送带", group: "物流", glyph: "→", desc: "固体 · 60/min" },
+  { kind: "belt", label: "传送带", group: "物流", glyph: "→", desc: "固体 · 30/min" },
   { kind: "pipe", label: "管道", group: "物流", glyph: "≈", desc: "流体 · 默认清水" },
-  { kind: "depot", label: "仓库取货口", group: "物流", glyph: "D", desc: "指定物品输出" },
+  { kind: "depot", label: "仓库取货口", group: "物流", glyph: "D", desc: "1×3 · 指定物品输出" },
   { kind: "refiner", label: "精炼炉", group: "生产", glyph: "R", desc: "矿石 → 金属块", image:"/assets/machines/refinery.webp" },
   { kind: "fitter", label: "配件机", group: "生产", glyph: "F", desc: "金属块 → 零件", image:"/assets/machines/assembler.webp" },
   { kind: "tank", label: "储液罐", group: "储存", glyph: "T", desc: "容量 600" },
 ];
 
 const baseInitial: Grid = {
-  "2,5": { kind: "depot", rotation: 0, id: "a" },
+  "2,4": { kind: "depot", rotation: 0, id: "a", partX:0, partY:0, width:1, height:3 },
+  "2,5": { kind: "depot", rotation: 0, id: "a", root:true, partX:0, partY:1, width:1, height:3 },
+  "2,6": { kind: "depot", rotation: 0, id: "a", partX:0, partY:2, width:1, height:3 },
   "3,5": { kind: "belt", rotation: 0, entry:2, id: "b" },
   "4,5": { kind: "belt", rotation: 3, entry:2, id: "c" },
   "4,4": { kind: "belt", rotation: 3, entry:1, id: "c2" },
@@ -107,18 +123,13 @@ const initial = (() => {
   const next = { ...baseInitial };
   const seed = (kind: "refiner" | "fitter", sx: number, sy: number, id: string) => {
     for (let dy = 0; dy < 3; dy++) for (let dx = 0; dx < 3; dx++)
-      next[keyOf(sx + dx, sy + dy)] = { kind, rotation: 0, id, root: dx === 1 && dy === 1, partX:dx, partY:dy, size:3 };
+      next[keyOf(sx + dx, sy + dy)] = { kind, rotation: 0, id, root: dx === 1 && dy === 1, partX:dx, partY:dy, size:3, width:3, height:3 };
   };
   seed("refiner", 5, 2, "d"); seed("fitter", 9, 2, "g");
   return next;
 })();
 
 const isTransport = (kind?: Kind) => kind === "belt" || kind === "pipe";
-
-function cellStatus(cell: Cell, running: boolean, tick: number) {
-  if (!running || !["refiner", "fitter"].includes(cell.kind)) return "idle";
-  return cell.kind === "refiner" || tick % 50 < 36 ? "running" : "waiting";
-}
 
 export default function Home() {
   const [theme, setTheme] = useState<"light" | "dark">("light");
@@ -156,6 +167,31 @@ export default function Home() {
     };
   }, [grid]);
   const flowRoutes = useMemo(() => [...getFlowRoutes(grid, "belt"), ...getFlowRoutes(grid, "pipe")], [grid]);
+  const machineStates = useMemo<Record<string,MachineState>>(()=>{
+    const entities = new Map<string,{cell:Cell;positions:{x:number;y:number;cell:Cell}[]}>();
+    Object.entries(grid).forEach(([key,cell])=>{
+      if (cell.kind!=="refiner" && cell.kind!=="fitter") return;
+      const [x,y]=key.split(",").map(Number);
+      const existing=entities.get(cell.id)??{cell,positions:[]};
+      existing.positions.push({x,y,cell}); entities.set(cell.id,existing);
+    });
+    const states:Record<string,MachineState>={};
+    entities.forEach(({cell,positions},id)=>{
+      const width=cell.width??cell.size??3, height=cell.height??cell.size??3;
+      const inputSide=opposite(cell.rotation), outputSide=cell.rotation;
+      const onSide=(part:Cell,side:Direction)=>side===0 ? part.partX===width-1 : side===1 ? part.partY===height-1 : side===2 ? part.partX===0 : part.partY===0;
+      const neighborAt=(position:{x:number;y:number},side:Direction)=>{const [dx,dy]=DELTAS[side];return grid[keyOf(position.x+dx,position.y+dy)]};
+      const hasInput=positions.some((position)=>onSide(position.cell,inputSide) && (()=>{const neighbor=neighborAt(position,inputSide);return neighbor?.kind==="belt" && neighbor.rotation===opposite(inputSide)})());
+      const hasOutput=positions.some((position)=>onSide(position.cell,outputSide) && (()=>{const neighbor=neighborAt(position,outputSide);return neighbor?.kind==="belt" && neighbor.entry===opposite(outputSide)})());
+      const cycle=cell.kind==="fitter"?50:30, active=cell.kind==="fitter"?36:30;
+      const phase=(tick+entityPhase(id,cycle))%cycle;
+      const status:MachineState["status"]=!running?"idle":!hasInput?"starved":!hasOutput?"blocked":cell.kind==="fitter"&&phase>=active?"waiting":"running";
+      const progress=status==="running"?Math.min(100,Math.round(phase/active*100)):0;
+      states[id]={id,kind:cell.kind,status,progress,remaining:status==="running"?Math.max(0,(active-phase)*.12).toFixed(1):"--",hasInput,hasOutput};
+    });
+    return states;
+  },[grid,running,tick]);
+  const productionStates = Object.values(machineStates);
   const selectedEntity = selectedEntityId ? Object.values(grid).find((cell)=>cell.id===selectedEntityId) : null;
 
   function preparePlacement(id: string, mode: "move" | "copy") {
@@ -188,11 +224,25 @@ export default function Home() {
   function rotateSelected() {
     if (!selectedEntityId) return;
     setGrid((old)=>{
+      const entries=Object.entries(old).filter(([,cell])=>cell.id===selectedEntityId);
+      if(!entries.length)return old;
+      const first=entries[0][1];
       const next={...old};
-      Object.keys(next).forEach((key)=>{if(next[key].id===selectedEntityId){const cell=next[key];next[key]={...cell,rotation:((cell.rotation+1)%4) as Direction,entry:cell.entry==null?undefined:((cell.entry+1)%4) as Direction}}});
+      if(isTransport(first.kind)){
+        entries.forEach(([key,cell])=>{next[key]={...cell,rotation:((cell.rotation+1)%4) as Direction,entry:cell.entry==null?undefined:((cell.entry+1)%4) as Direction}});
+        setNotice("已顺时针旋转 90°");
+        return next;
+      }
+      const positioned=entries.map(([key,cell])=>{const [x,y]=key.split(",").map(Number);return{x,y,cell}});
+      const minX=Math.min(...positioned.map((item)=>item.x)),minY=Math.min(...positioned.map((item)=>item.y));
+      const width=first.width??first.size??1,height=first.height??first.size??1;
+      const rotated=positioned.map(({cell})=>{const partX=cell.partX??0,partY=cell.partY??0;return{x:minX+height-1-partY,y:minY+partX,cell,partX:height-1-partY,partY:partX}});
+      if(rotated.some(({x,y})=>x<0||y<0||x>=cols||y>=rows||(old[keyOf(x,y)]&&old[keyOf(x,y)].id!==selectedEntityId))){setNotice("旋转后将超出画布或与现有设施冲突");return old}
+      entries.forEach(([key])=>delete next[key]);
+      rotated.forEach(({x,y,cell,partX,partY})=>{next[keyOf(x,y)]={...cell,partX,partY,width:height,height:width,rotation:((cell.rotation+1)%4) as Direction}});
+      setNotice("已顺时针旋转 90°");
       return next;
     });
-    setNotice("已顺时针旋转 90°");
   }
 
   useEffect(() => {
@@ -234,12 +284,14 @@ export default function Home() {
         drawHead.current = { x, y, kind:selected };
         return next;
       }
-      const size = selected === "refiner" || selected === "fitter" ? 3 : 1;
-      if (x + size > cols || y + size > rows) return old;
-      const cells = Array.from({ length: size * size }, (_, i) => keyOf(x + i % size, y + Math.floor(i / size)));
+      const width = selected === "refiner" || selected === "fitter" ? 3 : 1;
+      const height = selected === "refiner" || selected === "fitter" || selected === "depot" ? 3 : 1;
+      if (x + width > cols || y + height > rows) return old;
+      const cells = Array.from({ length: width * height }, (_, i) => keyOf(x + i % width, y + Math.floor(i / width)));
       if (cells.some((k) => old[k])) { setNotice("设备占地与现有设施冲突"); return old; }
       const id = crypto.randomUUID(); const next = { ...old };
-      cells.forEach((k, i) => next[k] = { kind: selected, rotation: 0, id, root: size === 1 || i === 4, partX:i%size, partY:Math.floor(i/size), size });
+      const rootIndex=Math.floor(height/2)*width+Math.floor(width/2);
+      cells.forEach((k, i) => next[k] = { kind:selected,rotation:0,id,root:i===rootIndex,partX:i%width,partY:Math.floor(i/width),size:Math.max(width,height),width,height });
       return next;
     });
   }
@@ -319,7 +371,7 @@ export default function Home() {
               <svg className="transport-overlay" viewBox={`0 0 ${cols} ${rows}`} preserveAspectRatio="none" aria-hidden="true">
                 {flowRoutes.map((route)=><g key={route.id} className={`route-track ${route.kind}`} data-content={route.cells[0]?.cell.content}>
                   <path className="track-edge" d={route.path}/><path className="track-fill" d={route.path}/>
-                  {route.cells.map(({x,y,cell})=><path key={`${x},${y}`} className="direction-arrow" d="M -.13 -.11 L .16 0 L -.13 .11 Z" transform={`translate(${x+.5} ${y+.5}) rotate(${cell.rotation*90})`}/>) }
+                  {route.cells.map(({x,y,cell})=><path key={`${x},${y}`} className="direction-arrow" d="M -.13 -.11 L .16 0 L -.13 .11 Z" transform={`translate(${x+.5} ${y+.5}) rotate(${arrowAngle(cell)})`}/>) }
                 </g>)}
               </svg>
               {running && <svg className="flow-overlay" viewBox={`0 0 ${cols} ${rows}`} preserveAspectRatio="none" aria-hidden="true">
@@ -338,18 +390,21 @@ export default function Home() {
               </svg>}
               {Array.from({ length: cols * rows }).map((_, index) => {
                 const x = index % cols; const y = Math.floor(index / cols); const cell = grid[keyOf(x, y)];
-                const status = cell ? cellStatus(cell, running, tick) : "";
-                const machine = cell?.kind === "refiner" ? { recipe:"蓝铁矿 ×1 → 蓝铁块 ×1", state:running ? "生产中" : "已暂停", blocked:"否" } : cell?.kind === "fitter" ? { recipe:"蓝铁块 ×1 → 铁制零件 ×1", state:status === "running" ? "生产中" : running ? "缺料等待" : "已暂停", blocked:"否" } : null;
-                const activeTicks = cell?.kind === "fitter" ? 36 : 30;
-                const phaseTick = cell?.kind === "fitter" ? tick % 50 : tick % 30;
-                const processing = Boolean(machine && status === "running");
-                const processProgress = processing ? Math.min(100,Math.round(phaseTick/activeTicks*100)) : 0;
-                const remainingSeconds = processing ? Math.max(0,(activeTicks-phaseTick)*.12).toFixed(1) : "--";
+                const machineState=cell?machineStates[cell.id]:undefined;
+                const status = machineState?.status??"idle";
+                const stateLabel=status==="running"?"生产中":status==="waiting"?"周期等待":status==="starved"?"缺少输入":status==="blocked"?"输出阻塞":"已暂停";
+                const machine = cell?.kind === "refiner" ? { recipe:"蓝铁矿 ×1 → 蓝铁块 ×1", state:stateLabel, blocked:status==="blocked"?"是":"否" } : cell?.kind === "fitter" ? { recipe:"蓝铁块 ×1 → 铁制零件 ×1", state:stateLabel, blocked:status==="blocked"?"是":"否" } : null;
+                const processing = status === "running";
+                const processProgress = machineState?.progress??0;
+                const remainingSeconds = machineState?.remaining??"--";
                 const machineImage = cell?.kind === "refiner" ? "/assets/machines/refinery.webp" : cell?.kind === "fitter" ? "/assets/machines/assembler.webp" : null;
-                const sideHasCell = (side:Direction) => side===0 ? cell?.partX===(cell?.size??1)-1 : side===1 ? cell?.partY===(cell?.size??1)-1 : side===2 ? cell?.partX===0 : cell?.partY===0;
+                const cellWidth=cell?.width??cell?.size??1,cellHeight=cell?.height??cell?.size??1;
+                const sideHasCell = (side:Direction) => side===0 ? cell?.partX===cellWidth-1 : side===1 ? cell?.partY===cellHeight-1 : side===2 ? cell?.partX===0 : cell?.partY===0;
+                const sideCenterCell = (side:Direction) => side===0||side===2 ? cell?.partY===Math.floor(cellHeight/2) : cell?.partX===Math.floor(cellWidth/2);
                 const outputSide = cell?.rotation ?? 0, inputSide = opposite(outputSide);
                 const inputPort = machine && sideHasCell(inputSide);
-                const outputPort = machine && sideHasCell(outputSide);
+                const outputPort = cell?.kind==="depot" ? sideHasCell(outputSide)&&sideCenterCell(outputSide) : machine && sideHasCell(outputSide);
+                const footprintStyle=cell?.root?{left:`-${(cell.partX??0)*100}%`,top:`-${(cell.partY??0)*100}%`,right:`-${(cellWidth-1-(cell.partX??0))*100}%`,bottom:`-${(cellHeight-1-(cell.partY??0))*100}%`}:undefined;
                 const entitySelected = Boolean(cell && cell.id===selectedEntityId);
                 const entityPicked = Boolean(cell && pickedEntity?.id===cell.id && pickedEntity.mode==="move");
                 return <button key={index} className={`cell ${cell ? `placed ${cell.kind}` : ""} ${status} ${entitySelected ? "selected-entity" : ""} ${entityPicked ? "picked-entity" : ""}`} aria-label={`${x},${y}${cell ? ` ${cell.kind}` : ""}`}
@@ -365,7 +420,7 @@ export default function Home() {
                     drawHead.current=null; setDrawing(true); paint(x, y, true);
                   }} onMouseEnter={() => drawing && paint(x, y)} onMouseLeave={()=>{if(holdTimer.current){window.clearTimeout(holdTimer.current);holdTimer.current=null}}} onMouseUp={() => {if(holdTimer.current){window.clearTimeout(holdTimer.current);holdTimer.current=null}setDrawing(false);drawHead.current=null;}}
                   onContextMenu={(e) => { e.preventDefault(); setGrid((old) => { const target=old[keyOf(x,y)]; if(!target)return old; const next={...old}; Object.keys(next).forEach(k=>{if(next[k].id===target.id)delete next[k]}); return next; }); }}>
-                    {cell && !isTransport(cell.kind) && <><span className={`cell-glyph ${cell.root ? `root ${cell.size === 1 || cell.size == null ? "compact" : ""}` : "part"}`}>{cell.root && <><b>{machineImage ? <img src={machineImage} alt={tools.find((t) => t.kind === cell.kind)?.label}/> : tools.find((t) => t.kind === cell.kind)?.glyph}</b>{machine && <span className="machine-overlay"><strong>{machine.recipe}</strong><small className={status}>● {machine.state}</small><em>阻塞：{machine.blocked}</em><span className="machine-progress"><i><b style={{width:`${processProgress}%`}}/></i><em>{processing ? `${processProgress}% · 剩余 ${remainingSeconds}s` : running ? "等待输入 · --" : "未启动 · --"}</em></span></span>}</>}</span>{inputPort && <span className={`port-marker input side-${inputSide}`} title="物品输入口"><i>IN</i><b>›</b></span>}{outputPort && <span className={`port-marker output side-${outputSide}`} title="物品输出口"><b>›</b><i>OUT</i></span>}{cell.root && status === "waiting" && <span className="wait-ring" />}</>}
+                    {cell && !isTransport(cell.kind) && <><span style={footprintStyle} className={`cell-glyph ${cell.root ? `root ${!machine ? "compact" : ""}` : "part"}`}>{cell.root && <><b>{machineImage ? <img src={machineImage} alt={tools.find((t) => t.kind === cell.kind)?.label}/> : tools.find((t) => t.kind === cell.kind)?.glyph}</b>{machine && <span className="machine-overlay"><strong>{machine.recipe}</strong><small className={status}>● {machine.state}</small><em>阻塞：{machine.blocked}</em><span className="machine-progress"><i><b style={{width:`${processProgress}%`}}/></i><em>{processing ? `${processProgress}% · 剩余 ${remainingSeconds}s` : status==="starved" ? "缺少输入 · --" : status==="blocked" ? "输出阻塞 · --" : running ? "周期等待 · --" : "未启动 · --"}</em></span></span>}</>}</span>{inputPort && <span className={`port-marker input side-${inputSide}`} title="物品输入口"><i>IN</i><b>›</b></span>}{outputPort && <span className={`port-marker output side-${outputSide}`} title="物品输出口"><b>›</b><i>OUT</i></span>}{cell.root && status === "waiting" && <span className="wait-ring" />}</>}
                   </button>;
               })}
             </div>
@@ -376,10 +431,9 @@ export default function Home() {
 
         <aside className="inspector panel">
           <div className="panel-heading"><span>生产监控</span><small>LIVE / 02</small></div>
-          <div className="metric-grid"><div><small>设备</small><strong>{counts.devices}</strong></div><div><small>物流线</small><strong>{counts.belts + counts.pipes}</strong></div><div><small>功率</small><strong>42<span> kW</span></strong></div><div><small>效率</small><strong>{running ? "72" : "—"}<span>%</span></strong></div></div>
+          <div className="metric-grid"><div><small>设备</small><strong>{counts.devices}</strong></div><div><small>物流线</small><strong>{counts.belts + counts.pipes}</strong></div><div><small>功率</small><strong>{productionStates.length*10+22}<span> kW</span></strong></div><div><small>效率</small><strong>{running&&productionStates.length ? Math.round(productionStates.filter((state)=>state.status==="running").length/productionStates.length*100) : "—"}<span>%</span></strong></div></div>
           <div className="section-title"><span>设备状态</span><small>{running ? "SIMULATION ACTIVE" : "SIMULATION PAUSED"}</small></div>
-          <div className="machine-card good"><div className="machine-icon">R</div><div><strong>精炼炉 #01</strong><small>{running ? "蓝铁矿 → 蓝铁块 · 未阻塞" : "等待启动"}</small></div><em>{running ? "全速" : "暂停"}</em></div>
-          <div className={`machine-card ${running ? "warn" : ""}`}><div className="machine-icon">F</div><div><strong>配件机 #01</strong><small>{running ? "蓝铁块 → 铁制零件 · 缺料 / 未阻塞" : "等待启动"}</small></div><em>{running ? "72%" : "暂停"}</em></div>
+          {productionStates.map((state,index)=>{const stateText=state.status==="running"?"生产中":state.status==="waiting"?"周期等待":state.status==="starved"?"缺少输入":state.status==="blocked"?"输出阻塞":"暂停";return <div key={state.id} className={`machine-card ${state.status==="running"?"good":state.status!=="idle"?"warn":""}`}><div className="machine-icon">{state.kind==="refiner"?"R":"F"}</div><div><strong>{state.kind==="refiner"?"精炼炉":"配件机"} #{String(index+1).padStart(2,"0")}</strong><small>{state.kind==="refiner"?"蓝铁矿 → 蓝铁块":"蓝铁块 → 铁制零件"} · {stateText}</small></div><em>{state.status==="running"?`${state.progress}%`:stateText}</em></div>})}
           <div className="section-title"><span>流量</span><small>PER MINUTE</small></div>
           <div className="flow-row"><span>蓝铁矿</span><b>{running ? 30 : 0}</b><i style={{ width: running ? "54%" : 0 }} /></div>
           <div className="flow-row"><span>蓝铁块</span><b>{running ? 18 : 0}</b><i style={{ width: running ? "34%" : 0 }} /></div>
