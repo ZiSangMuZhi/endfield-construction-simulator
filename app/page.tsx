@@ -6,8 +6,8 @@ import { BELT_HEADWAY_TICKS, BELT_ITEMS_PER_MINUTE, PIPE_HEADWAY_TICKS, PIPE_ITE
 import { RADIAL_CONFIRM_DELAY_MS, RADIAL_HOLD_DELAY_MS, RADIAL_PREOPEN_TOLERANCE_PX, RadialAction, radialSelection } from "../lib/radial-menu";
 
 type TransportKind = "belt" | "pipe";
-type Kind = TransportKind | "refiner" | "crusher" | "fitter" | "molder" | "filler" | "dismantler" | "sealer" | "grinder" | "seedPicker" | "planter" | "reactor" | "purifier" | "forge" | "gearAssembler" | "waterPump" | "splitter" | "merger" | "logisticsBridge" | "pipeSplitter" | "pipeMerger" | "pipeBridge" | "storagePort" | "tank" | "depot" | "powerPole";
-type ProductionKind = "refiner" | "crusher" | "fitter" | "molder" | "filler" | "dismantler" | "sealer" | "grinder" | "seedPicker" | "planter" | "reactor" | "purifier" | "forge" | "gearAssembler" | "waterPump";
+type Kind = TransportKind | "refiner" | "crusher" | "fitter" | "molder" | "filler" | "dismantler" | "sealer" | "grinder" | "seedPicker" | "planter" | "reactor" | "purifier" | "waterTreatment" | "forge" | "gearAssembler" | "waterPump" | "splitter" | "merger" | "logisticsBridge" | "pipeSplitter" | "pipeMerger" | "pipeBridge" | "storagePort" | "tank" | "depot" | "powerPole";
+type ProductionKind = "refiner" | "crusher" | "fitter" | "molder" | "filler" | "dismantler" | "sealer" | "grinder" | "seedPicker" | "planter" | "reactor" | "purifier" | "waterTreatment" | "forge" | "gearAssembler" | "waterPump";
 type MachineMode = "solid" | "fluid";
 type DeviceCategory = "全部" | "资源开采" | "仓储存取" | "基础生产" | "合成制造" | "电力供应" | "功能设备" | "战斗辅助" | "种植调配";
 type Direction = 0 | 1 | 2 | 3;
@@ -188,6 +188,9 @@ const MACHINE_DEFINITIONS:Record<ProductionKind,MachineDefinition> = {
     recipe("purify-xircon-effluent","提纯壤晶废液","fluid",[{itemId:"inert-xircon-effluent",amount:4}],[{itemId:"xircon-effluent",amount:1},{itemId:"clean-water",amount:1}],2),
     recipe("purify-cuprium-solution","赫铜溶液","fluid",[{itemId:"cuprium-solution",amount:4}],[{itemId:"hetonite-solution",amount:1},{itemId:"precipitation-acid",amount:1}],2),
   ]},
+  waterTreatment:{name:"废水处理机",width:3,height:3,powerUsage:50,recipes:[
+    recipe("treat-sewage","污水无害化处理","fluid",[{itemId:"sewage",amount:1}],[],2),
+  ]},
   forge:{name:"天有洪炉",width:5,height:5,image:"/assets/machines/forge-of-the-sky.webp",powerUsage:50,recipes:[
     recipe("xiranite","息壤","fluid",[{itemId:"stable-carbon",amount:2},{itemId:"clean-water",amount:1}],[{itemId:"xiranite",amount:1}],2),
   ]},
@@ -201,7 +204,7 @@ const MACHINE_DEFINITIONS:Record<ProductionKind,MachineDefinition> = {
 
 const activeRecipe=(definition:MachineDefinition,recipeId?:string)=>definition.recipes.find((candidate)=>candidate.id===recipeId)??definition.recipes[0];
 const itemName=(itemId:string)=>INDUSTRIAL_ITEMS.find((item)=>item.id===itemId)?.name??itemId;
-const recipeText=(current:MachineRecipe)=>`${current.inputs.length?current.inputs.map((input)=>`${itemName(input.itemId)} ×${input.amount}`).join(" + "):"环境输入"} → ${current.outputs.map((output)=>`${itemName(output.itemId)} ×${output.amount}`).join(" + ")}`;
+const recipeText=(current:MachineRecipe)=>`${current.inputs.length?current.inputs.map((input)=>`${itemName(input.itemId)} ×${input.amount}`).join(" + "):"环境输入"} → ${current.outputs.length?current.outputs.map((output)=>`${itemName(output.itemId)} ×${output.amount}`).join(" + "):"无害化处理"}`;
 
 const edgePorts=(height:number,side:Direction,x:number):PortSpec[]=>Array.from({length:height},(_,y)=>({x,y,side}));
 
@@ -220,6 +223,7 @@ const EQUIPMENT_LAYOUTS: Partial<Record<Kind,EquipmentLayout>> = {
   planter:{width:5,height:5,inputs:[...edgePorts(5,2,0),{x:2,y:4,side:1,transport:"pipe",modes:["fluid"]}],outputs:edgePorts(5,0,4)},
   reactor:{width:5,height:5,inputs:[{x:0,y:1,side:2},{x:0,y:3,side:2,transport:"pipe"}],outputs:[{x:4,y:1,side:0,transport:"pipe",outputIndex:1},{x:4,y:3,side:0,transport:"pipe",outputIndex:0}]},
   purifier:{width:5,height:5,inputs:[{x:0,y:2,side:2,transport:"pipe"}],outputs:[{x:4,y:1,side:0,transport:"pipe",outputIndex:1},{x:4,y:3,side:0,transport:"pipe",outputIndex:0}]},
+  waterTreatment:{width:3,height:3,inputs:[{x:0,y:1,side:2,transport:"pipe"}],outputs:[]},
   forge:{width:5,height:5,inputs:[...edgePorts(5,2,0),{x:2,y:4,side:1,transport:"pipe"}],outputs:edgePorts(5,0,4)},
   gearAssembler:{width:4,height:6,inputs:edgePorts(6,2,0),outputs:edgePorts(6,0,3)},
   waterPump:{width:2,height:2,inputs:[],outputs:[{x:1,y:1,side:0,transport:"pipe"}]},
@@ -452,6 +456,7 @@ const tools: { kind: Kind; label: string; type:"tool"|"device"; category?:Device
   { kind: "grinder", label: "研磨机", type:"device", category:"合成制造", glyph: "GR", desc: "6×4 · 粉末精细研磨", image:"/assets/machines/grinder.webp" },
   { kind: "reactor", label: "反应池", type:"device", category:"合成制造", glyph: "RC", desc: "5×5 · 固液反应", image:"/assets/machines/reactor.webp" },
   { kind: "purifier", label: "提纯机", type:"device", category:"合成制造", glyph: "PU", desc: "5×5 · 双液体输出" },
+  { kind: "waterTreatment", label: "废水处理机", type:"device", category:"基础生产", glyph: "WT", desc: "3×3 · 污水 30/min" },
   { kind: "forge", label: "天有洪炉", type:"device", category:"合成制造", glyph: "FS", desc: "5×5 · 息壤合成", image:"/assets/machines/forge-of-the-sky.webp" },
   { kind: "waterPump", label: "水泵", type:"device", category:"资源开采", glyph: "WP", desc: "2×2 · 清水 60/min", image:"/assets/machines/water-pump.svg" },
   { kind: "powerPole", label: "供电桩", type:"device", category:"电力供应", glyph: "PWR", desc: "2×2 · 供电范围 12×12", image:"/assets/machines/supply-pole.webp" },

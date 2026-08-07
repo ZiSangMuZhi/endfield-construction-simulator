@@ -32,6 +32,7 @@ test("server-renders the belt-first blueprint planner", async () => {
   assert.match(html, /拆解机/);
   assert.match(html, /反应池/);
   assert.match(html, /提纯机/);
+  assert.match(html, /废水处理机/);
   assert.match(html, /待补图/);
   assert.match(html, /水泵/);
   assert.match(html, /游戏设备分类/);
@@ -179,6 +180,10 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(page, /reactor:\{name:"反应池"[\s\S]*?recipe\("xircon-effluents"[\s\S]*?,2\)/);
   assert.match(page, /purifier:\{name:"提纯机",width:5,height:5,powerUsage:50[\s\S]*?recipe\("purify-cuprium-solution"[\s\S]*?,2\)/);
   assert.match(page, /purifier:\{width:5,height:5[\s\S]*?outputIndex:1[\s\S]*?outputIndex:0/);
+  assert.match(page, /waterTreatment:\{name:"废水处理机",width:3,height:3,powerUsage:50[\s\S]*?recipe\("treat-sewage","污水无害化处理","fluid",\[\{itemId:"sewage",amount:1\}\],\[\],2\)/);
+  assert.match(page, /waterTreatment:\{width:3,height:3,inputs:\[\{x:0,y:1,side:2,transport:"pipe"\}\],outputs:\[\]\}/);
+  assert.match(page, /current\.outputs\.length[\s\S]*?"无害化处理"/);
+  assert.doesNotMatch(page, /waterTreatment:\{name:"废水处理机"[^\n]*image:/);
   assert.match(page, /outputIndex:spec\.outputIndex/);
   assert.match(page, /const indexedOutput=sourcePort\?\.outputIndex==null\?undefined:sourceRecipe\?\.outputs\[sourcePort\.outputIndex\]/);
   assert.match(page, /waterPump:\{name:"水泵"[\s\S]*?recipe\("clean-water"[\s\S]*?,1\)/);
