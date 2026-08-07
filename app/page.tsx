@@ -22,19 +22,29 @@ const directionBetween = (fromX: number, fromY: number, toX: number, toY: number
 };
 
 type FlowRoute = { id: string; kind: "belt" | "pipe"; cells: { x:number; y:number; cell:Cell }[]; path: string };
+type PickedEntity = { id:string; mode:"move" | "copy"; cells:{ dx:number; dy:number; cell:Cell }[] };
 
-function roundedPath(points: { x:number; y:number }[]) {
-  if (points.length < 2) return "";
-  const center = points.map((point) => ({ x:point.x + .5, y:point.y + .5 }));
-  let path = `M ${center[0].x} ${center[0].y}`;
-  for (let i = 1; i < center.length - 1; i++) {
-    const previous = center[i - 1], current = center[i], next = center[i + 1];
+function roundedPath(points: { x:number; y:number; cell:Cell }[]) {
+  if (!points.length) return "";
+  const centers = points.map((point) => ({ x:point.x + .5, y:point.y + .5 }));
+  const first = points[0], last = points[points.length-1];
+  const startDelta = first.cell.entry == null ? [0,0] : DELTAS[first.cell.entry];
+  const endDelta = DELTAS[last.cell.rotation];
+  const expanded = [
+    {x:centers[0].x+startDelta[0]*.5,y:centers[0].y+startDelta[1]*.5},
+    ...centers,
+    {x:centers[centers.length-1].x+endDelta[0]*.5,y:centers[centers.length-1].y+endDelta[1]*.5},
+  ].filter((point,index,array)=>index===0 || point.x!==array[index-1].x || point.y!==array[index-1].y);
+  if (expanded.length === 1) return `M ${expanded[0].x-.18} ${expanded[0].y} L ${expanded[0].x+.18} ${expanded[0].y}`;
+  let path = `M ${expanded[0].x} ${expanded[0].y}`;
+  for (let i = 1; i < expanded.length - 1; i++) {
+    const previous = expanded[i - 1], current = expanded[i], next = expanded[i + 1];
     const before = { x:current.x - (current.x - previous.x) * .28, y:current.y - (current.y - previous.y) * .28 };
     const after = { x:current.x + (next.x - current.x) * .28, y:current.y + (next.y - current.y) * .28 };
     path += ` L ${before.x} ${before.y} Q ${current.x} ${current.y} ${after.x} ${after.y}`;
   }
-  const last = center[center.length - 1];
-  return `${path} L ${last.x} ${last.y}`;
+  const end = expanded[expanded.length - 1];
+  return `${path} L ${end.x} ${end.y}`;
 }
 
 function getFlowRoutes(grid: Grid, kind: "belt" | "pipe"): FlowRoute[] {
@@ -62,7 +72,7 @@ function getFlowRoutes(grid: Grid, kind: "belt" | "pipe"): FlowRoute[] {
       cells.push({ x, y, cell });
       current = nextKey(current, cell);
     }
-    if (cells.length > 1) routes.push({ id:`${kind}-${start}`, kind, cells, path:roundedPath(cells) });
+    if (cells.length) routes.push({ id:`${kind}-${start}`, kind, cells, path:roundedPath(cells) });
   };
   entries.filter(([key]) => !incoming.has(key)).forEach(([key]) => walk(key));
   entries.forEach(([key]) => { if (!visited.has(key)) walk(key); });
@@ -105,9 +115,9 @@ const initial = (() => {
 
 const isTransport = (kind?: Kind) => kind === "belt" || kind === "pipe";
 
-function cellStatus(cell: Cell, running: boolean) {
+function cellStatus(cell: Cell, running: boolean, tick: number) {
   if (!running || !["refiner", "fitter"].includes(cell.kind)) return "idle";
-  return cell.kind === "refiner" ? "running" : "waiting";
+  return cell.kind === "refiner" || tick % 50 < 36 ? "running" : "waiting";
 }
 
 export default function Home() {
@@ -115,10 +125,14 @@ export default function Home() {
   const [grid, setGrid] = useState<Grid>(initial);
   const [selected, setSelected] = useState<Kind>("belt");
   const [pipeContent, setPipeContent] = useState<PipeContent>("clean-water");
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
+  const [pickedEntity, setPickedEntity] = useState<PickedEntity | null>(null);
   const [running, setRunning] = useState(false);
   const [tick, setTick] = useState(0);
   const [drawing, setDrawing] = useState(false);
   const drawHead = useRef<{ x:number; y:number; kind:Kind } | null>(null);
+  const holdTimer = useRef<number | null>(null);
   const [notice, setNotice] = useState("演示蓝图已载入");
   const [cols, setCols] = useState(DEFAULT_COLS);
   const [rows, setRows] = useState(DEFAULT_ROWS);
@@ -133,17 +147,6 @@ export default function Home() {
     return () => window.clearInterval(timer);
   }, [running]);
 
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target?.matches("input, textarea, select")) return;
-      if (event.key.toLowerCase() === "e") { setSelected("belt"); setNotice("E · 传送带放置模式"); }
-      if (event.key.toLowerCase() === "q") { setSelected("pipe"); setNotice("Q · 管道放置模式"); }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
   const counts = useMemo(() => {
     const values = Object.values(grid);
     return {
@@ -153,6 +156,61 @@ export default function Home() {
     };
   }, [grid]);
   const flowRoutes = useMemo(() => [...getFlowRoutes(grid, "belt"), ...getFlowRoutes(grid, "pipe")], [grid]);
+  const selectedEntity = selectedEntityId ? Object.values(grid).find((cell)=>cell.id===selectedEntityId) : null;
+
+  function preparePlacement(id: string, mode: "move" | "copy") {
+    const entries = Object.entries(grid).filter(([, cell]) => cell.id === id);
+    if (!entries.length) return;
+    const positions = entries.map(([key, cell]) => { const [x,y]=key.split(",").map(Number); return {x,y,cell}; });
+    const minX=Math.min(...positions.map((item)=>item.x)), minY=Math.min(...positions.map((item)=>item.y));
+    setPickedEntity({ id, mode, cells:positions.map(({x,y,cell})=>({dx:x-minX,dy:y-minY,cell})) });
+    setSelectionMode(true);
+    setNotice(mode === "move" ? "移动模式 · 点击目标位置放下" : "复制模式 · 点击目标位置放置副本");
+  }
+
+  function placePicked(x: number, y: number) {
+    if (!pickedEntity) return false;
+    const targets = pickedEntity.cells.map((item)=>({key:keyOf(x+item.dx,y+item.dy),x:x+item.dx,y:y+item.dy,item}));
+    const blocked = targets.some(({key,x:tx,y:ty}) => tx<0 || ty<0 || tx>=cols || ty>=rows || (grid[key] && !(pickedEntity.mode === "move" && grid[key].id === pickedEntity.id)));
+    if (blocked) { setNotice("目标位置超出画布或与现有设施冲突"); return true; }
+    const placedId = pickedEntity.mode === "copy" ? crypto.randomUUID() : pickedEntity.id;
+    setGrid((old)=>{
+      const next={...old};
+      if (pickedEntity.mode === "move") Object.keys(next).forEach((key)=>{if(next[key].id===pickedEntity.id)delete next[key]});
+      targets.forEach(({key,item})=>{next[key]={...item.cell,id:placedId}});
+      return next;
+    });
+    setSelectedEntityId(placedId); setPickedEntity(null);
+    setNotice(pickedEntity.mode === "copy" ? "副本已放置" : "设备已移动");
+    return true;
+  }
+
+  function rotateSelected() {
+    if (!selectedEntityId) return;
+    setGrid((old)=>{
+      const next={...old};
+      Object.keys(next).forEach((key)=>{if(next[key].id===selectedEntityId){const cell=next[key];next[key]={...cell,rotation:((cell.rotation+1)%4) as Direction,entry:cell.entry==null?undefined:((cell.entry+1)%4) as Direction}}});
+      return next;
+    });
+    setNotice("已顺时针旋转 90°");
+  }
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.matches("input, textarea, select")) return;
+      const key = event.key.toLowerCase();
+      if (key === "e") { setSelected("belt"); setSelectionMode(false); setPickedEntity(null); setNotice("E · 传送带放置模式"); }
+      if (key === "q") { setSelected("pipe"); setSelectionMode(false); setPickedEntity(null); setNotice("Q · 管道放置模式"); }
+      if (key === "x") { setSelectionMode(true); setPickedEntity(null); setNotice("X · 选择模式：点击一个方块"); }
+      if (key === "r" && selectedEntityId) { event.preventDefault(); rotateSelected(); }
+      if (key === "c" && selectedEntityId) { event.preventDefault(); preparePlacement(selectedEntityId,"copy"); }
+      if (key === "m" && selectedEntityId) { event.preventDefault(); preparePlacement(selectedEntityId,"move"); }
+      if (key === "escape") { setPickedEntity(null); setSelectedEntityId(null); setSelectionMode(false); setNotice("已取消选择"); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedEntityId, grid]);
 
   function paint(x: number, y: number, begin = false) {
     const key = keyOf(x, y);
@@ -216,7 +274,7 @@ export default function Home() {
             <div className="tool-group" key={group}>
               <p>{group}</p>
               {tools.filter((t) => t.group === group).map((tool) => (
-                <button key={tool.kind} className={`tool ${selected === tool.kind ? "active" : ""}`} onClick={() => setSelected(tool.kind)}>
+                <button key={tool.kind} className={`tool ${selected === tool.kind && !selectionMode ? "active" : ""}`} onClick={() => {setSelected(tool.kind);setSelectionMode(false);setPickedEntity(null);setSelectedEntityId(null)}}>
                   <span className={`tool-glyph ${tool.kind}`}>{tool.image ? <img src={tool.image} alt=""/> : tool.glyph}</span>
                   <span><strong>{tool.label}</strong><small>{tool.desc}</small></span>
                   {(tool.kind === "belt" || tool.kind === "pipe") && <kbd className="tool-key">{tool.kind === "belt" ? "E" : "Q"}</kbd>}
@@ -224,6 +282,9 @@ export default function Home() {
               ))}
             </div>
           ))}
+          <button className={`tool selection-tool ${selectionMode ? "active" : ""}`} onClick={()=>{setSelectionMode(true);setPickedEntity(null);setNotice("X · 选择模式：点击一个方块")}}>
+            <span className="tool-glyph">□</span><span><strong>选择 / 移动</strong><small>长按拿起 · R 旋转</small></span><kbd className="tool-key">X</kbd>
+          </button>
           <div className="hint"><kbd>拖拽</kbd> 连续铺设　<kbd>右键</kbd> 拆除</div>
         </aside>
 
@@ -246,47 +307,65 @@ export default function Home() {
             onMouseMove={e=>{if(panning)setPan({x:panning.ox+e.clientX-panning.x,y:panning.oy+e.clientY-panning.y})}}
             onMouseUp={()=>setPanning(null)} onMouseLeave={()=>setPanning(null)}
             onWheel={e=>{if(e.ctrlKey){e.preventDefault();setZoom(z=>Math.max(.55,Math.min(1.7,z-e.deltaY*.001)))}}}>
+            {selectedEntity && <div className="selection-toolbar">
+              <span><kbd>X</kbd> 已选中 <strong>{tools.find((tool)=>tool.kind===selectedEntity.kind)?.label}</strong>{pickedEntity && <em>{pickedEntity.mode === "move" ? "移动中" : "复制中"}</em>}</span>
+              <button onClick={()=>preparePlacement(selectedEntity.id,"copy")}><kbd>C</kbd> 复制</button>
+              <button onClick={rotateSelected}><kbd>R</kbd> 旋转</button>
+              <button onClick={()=>preparePlacement(selectedEntity.id,"move")}><kbd>M</kbd> 移动</button>
+              <button onClick={()=>{setSelectedEntityId(null);setPickedEntity(null);setSelectionMode(false)}}>取消</button>
+            </div>}
             <div className="axis axis-y">12<br/>08<br/>04<br/>00</div>
             <div className={`grid ${panning ? "is-panning" : ""} ${running ? "simulation-running" : ""}`} style={{ gridTemplateColumns: `repeat(${cols}, 1fr)`, aspectRatio:`${cols}/${rows}`, transform:`translate(${pan.x}px,${pan.y}px) scale(${zoom})` }} onMouseLeave={() => { setDrawing(false); drawHead.current=null; }}>
+              <svg className="transport-overlay" viewBox={`0 0 ${cols} ${rows}`} preserveAspectRatio="none" aria-hidden="true">
+                {flowRoutes.map((route)=><g key={route.id} className={`route-track ${route.kind}`} data-content={route.cells[0]?.cell.content}>
+                  <path className="track-edge" d={route.path}/><path className="track-fill" d={route.path}/>
+                  {route.cells.map(({x,y,cell})=><path key={`${x},${y}`} className="direction-arrow" d="M -.13 -.11 L .16 0 L -.13 .11 Z" transform={`translate(${x+.5} ${y+.5}) rotate(${cell.rotation*90})`}/>) }
+                </g>)}
+              </svg>
               {running && <svg className="flow-overlay" viewBox={`0 0 ${cols} ${rows}`} preserveAspectRatio="none" aria-hidden="true">
                 {flowRoutes.map((route) => {
-                  const duration = Math.max(1.2, (route.cells.length - 1) * .62);
-                  const arrows = Math.max(2, route.cells.length - 1);
+                  const duration = Math.max(1.5, (route.cells.length - 1) * 1.1);
+                  const cargoCount = route.cells.length;
                   const cargo = route.kind === "pipe" ? "/assets/items/liquid-xiranite.webp" : route.cells[0].x < 8 ? "/assets/items/blue-iron-ore.webp" : "/assets/items/blue-iron-block.webp";
                   return <g key={route.id} className={`route-motion ${route.kind}`}>
-                    {Array.from({length:arrows}).map((_, arrowIndex) => <g className="flow-arrow" key={arrowIndex}>
-                      <path d="M -.13 -.11 L .16 0 L -.13 .11 Z"/>
-                      <animateMotion path={route.path} dur={`${duration}s`} begin={`${-(duration * arrowIndex / arrows)}s`} repeatCount="indefinite" rotate="auto"/>
+                    {Array.from({length:cargoCount}).map((_,cargoIndex)=><g className="flow-cargo" key={cargoIndex}>
+                      <rect x={route.kind === "pipe" ? "-.21" : "-.3"} y={route.kind === "pipe" ? "-.21" : "-.3"} width={route.kind === "pipe" ? ".42" : ".6"} height={route.kind === "pipe" ? ".42" : ".6"} rx={route.kind === "pipe" ? ".21" : ".05"}/>
+                      <image href={cargo} x={route.kind === "pipe" ? "-.17" : "-.25"} y={route.kind === "pipe" ? "-.17" : "-.25"} width={route.kind === "pipe" ? ".34" : ".5"} height={route.kind === "pipe" ? ".34" : ".5"} preserveAspectRatio="xMidYMid meet"/>
+                      <animateMotion path={route.path} dur={`${duration}s`} begin={`${-(duration * cargoIndex / cargoCount)}s`} repeatCount="indefinite" rotate="auto"/>
                     </g>)}
-                    <g className="flow-cargo">
-                      <rect x="-.24" y="-.24" width=".48" height=".48" rx={route.kind === "pipe" ? ".24" : ".04"}/>
-                      <image href={cargo} x="-.19" y="-.19" width=".38" height=".38" preserveAspectRatio="xMidYMid meet"/>
-                      <animateMotion path={route.path} dur={`${duration * 2.6}s`} repeatCount="indefinite" rotate="auto"/>
-                    </g>
                   </g>;
                 })}
               </svg>}
               {Array.from({ length: cols * rows }).map((_, index) => {
                 const x = index % cols; const y = Math.floor(index / cols); const cell = grid[keyOf(x, y)];
-                const status = cell ? cellStatus(cell, running) : "";
-                const neighbors = cell ? ([3,0,1,2] as Direction[]).map((direction) => { const [dx,dy]=DELTAS[direction]; return { direction, cell:grid[keyOf(x+dx,y+dy)] }; }) : [];
-                const sideIsLinked = (direction: Direction) => {
-                  if (!cell || !isTransport(cell.kind) || (cell.rotation !== direction && cell.entry !== direction)) return false;
-                  const neighbor = neighbors.find((item) => item.direction === direction)?.cell;
-                  if (!neighbor) return true;
-                  if (neighbor.kind !== cell.kind) return cell.kind === "belt" && !isTransport(neighbor.kind) && (direction === 0 || direction === 2);
-                  return cell.rotation === direction ? neighbor.entry === opposite(direction) : neighbor.rotation === opposite(direction);
-                };
-                const mask = cell && isTransport(cell.kind) ? ([3,0,1,2] as Direction[]).filter(sideIsLinked).map((direction)=>["e","s","w","n"][direction]).join("") : "";
-                const machine = cell?.kind === "refiner" ? { recipe:"蓝铁矿 ×1 → 蓝铁块 ×1", state:running ? "生产中" : "已暂停", blocked:"否" } : cell?.kind === "fitter" ? { recipe:"蓝铁块 ×1 → 铁制零件 ×1", state:running ? "缺料等待" : "已暂停", blocked:"否" } : null;
+                const status = cell ? cellStatus(cell, running, tick) : "";
+                const machine = cell?.kind === "refiner" ? { recipe:"蓝铁矿 ×1 → 蓝铁块 ×1", state:running ? "生产中" : "已暂停", blocked:"否" } : cell?.kind === "fitter" ? { recipe:"蓝铁块 ×1 → 铁制零件 ×1", state:status === "running" ? "生产中" : running ? "缺料等待" : "已暂停", blocked:"否" } : null;
+                const activeTicks = cell?.kind === "fitter" ? 36 : 30;
+                const phaseTick = cell?.kind === "fitter" ? tick % 50 : tick % 30;
+                const processing = Boolean(machine && status === "running");
+                const processProgress = processing ? Math.min(100,Math.round(phaseTick/activeTicks*100)) : 0;
+                const remainingSeconds = processing ? Math.max(0,(activeTicks-phaseTick)*.12).toFixed(1) : "--";
                 const machineImage = cell?.kind === "refiner" ? "/assets/machines/refinery.webp" : cell?.kind === "fitter" ? "/assets/machines/assembler.webp" : null;
-                const inputPort = machine && cell?.partX === 0;
-                const outputPort = machine && cell?.partX === (cell?.size ?? 1)-1;
-                return <button key={index} className={`cell ${cell ? `placed ${cell.kind}` : ""} ${status}`} aria-label={`${x},${y}${cell ? ` ${cell.kind}` : ""}`}
-                  onMouseDown={(e) => { if(e.button===1||e.altKey)return; drawHead.current=null; setDrawing(true); paint(x, y, true); }} onMouseEnter={() => drawing && paint(x, y)} onMouseUp={() => {setDrawing(false);drawHead.current=null;}}
+                const sideHasCell = (side:Direction) => side===0 ? cell?.partX===(cell?.size??1)-1 : side===1 ? cell?.partY===(cell?.size??1)-1 : side===2 ? cell?.partX===0 : cell?.partY===0;
+                const outputSide = cell?.rotation ?? 0, inputSide = opposite(outputSide);
+                const inputPort = machine && sideHasCell(inputSide);
+                const outputPort = machine && sideHasCell(outputSide);
+                const entitySelected = Boolean(cell && cell.id===selectedEntityId);
+                const entityPicked = Boolean(cell && pickedEntity?.id===cell.id && pickedEntity.mode==="move");
+                return <button key={index} className={`cell ${cell ? `placed ${cell.kind}` : ""} ${status} ${entitySelected ? "selected-entity" : ""} ${entityPicked ? "picked-entity" : ""}`} aria-label={`${x},${y}${cell ? ` ${cell.kind}` : ""}`}
+                  onMouseDown={(e) => {
+                    if(e.button===1||e.altKey)return;
+                    if (pickedEntity) { placePicked(x,y); return; }
+                    if (selectionMode) { setSelectedEntityId(cell?.id??null); setNotice(cell ? "已选中设施" : "该位置为空"); return; }
+                    if (cell && !isTransport(cell.kind)) {
+                      if(holdTimer.current)window.clearTimeout(holdTimer.current);
+                      holdTimer.current=window.setTimeout(()=>{setSelectedEntityId(cell.id);preparePlacement(cell.id,"move")},450);
+                      return;
+                    }
+                    drawHead.current=null; setDrawing(true); paint(x, y, true);
+                  }} onMouseEnter={() => drawing && paint(x, y)} onMouseLeave={()=>{if(holdTimer.current){window.clearTimeout(holdTimer.current);holdTimer.current=null}}} onMouseUp={() => {if(holdTimer.current){window.clearTimeout(holdTimer.current);holdTimer.current=null}setDrawing(false);drawHead.current=null;}}
                   onContextMenu={(e) => { e.preventDefault(); setGrid((old) => { const target=old[keyOf(x,y)]; if(!target)return old; const next={...old}; Object.keys(next).forEach(k=>{if(next[k].id===target.id)delete next[k]}); return next; }); }}>
-                    {cell && isTransport(cell.kind) && <span className="transport-track" data-mask={mask || (["e","s","w","n"] as const)[cell.rotation]} data-flow={cell.rotation} data-content={cell.content}><i className="seg n"/><i className="seg e"/><i className="seg s"/><i className="seg w"/><span className="junction-core"/></span>}
-                    {cell && !isTransport(cell.kind) && <><span className={`cell-glyph ${cell.root ? `root ${cell.size === 1 || cell.size == null ? "compact" : ""}` : "part"}`}>{cell.root && <><b>{machineImage ? <img src={machineImage} alt={tools.find((t) => t.kind === cell.kind)?.label}/> : tools.find((t) => t.kind === cell.kind)?.glyph}</b>{machine && <span className="machine-overlay"><strong>{machine.recipe}</strong><small className={status}>● {machine.state}</small><em>阻塞：{machine.blocked}</em></span>}</>}</span>{inputPort && <span className="port-marker input" title="物品输入口"><i>IN</i><b>›</b></span>}{outputPort && <span className="port-marker output" title="物品输出口"><b>›</b><i>OUT</i></span>}{cell.root && status === "waiting" && <span className="wait-ring" />}</>}
+                    {cell && !isTransport(cell.kind) && <><span className={`cell-glyph ${cell.root ? `root ${cell.size === 1 || cell.size == null ? "compact" : ""}` : "part"}`}>{cell.root && <><b>{machineImage ? <img src={machineImage} alt={tools.find((t) => t.kind === cell.kind)?.label}/> : tools.find((t) => t.kind === cell.kind)?.glyph}</b>{machine && <span className="machine-overlay"><strong>{machine.recipe}</strong><small className={status}>● {machine.state}</small><em>阻塞：{machine.blocked}</em><span className="machine-progress"><i><b style={{width:`${processProgress}%`}}/></i><em>{processing ? `${processProgress}% · 剩余 ${remainingSeconds}s` : running ? "等待输入 · --" : "未启动 · --"}</em></span></span>}</>}</span>{inputPort && <span className={`port-marker input side-${inputSide}`} title="物品输入口"><i>IN</i><b>›</b></span>}{outputPort && <span className={`port-marker output side-${outputSide}`} title="物品输出口"><b>›</b><i>OUT</i></span>}{cell.root && status === "waiting" && <span className="wait-ring" />}</>}
                   </button>;
               })}
             </div>
