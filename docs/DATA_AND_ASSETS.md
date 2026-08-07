@@ -41,14 +41,28 @@ Alpha 版优先复用已登记的本地游戏相关图标；没有可用图标�
 
 - https://github.com/eddy3721/arknights-endfield-bp-tool/blob/main/src/config/machines.ts
 
+同一参考配置记录塑形机 `3×3`、灌装机 `4×6`、反应池 `5×5`。官方简中资料可核实“塑形机”（不是“塑型机”）、“灌装机”、“反应池”、“水泵”、“物流桥”、“管道桥”、“管道分流器”和“管道汇流器”这些名称，并确认分流器为 1 入至多 3 出、汇流器为至多 3 入 1 出、桥让两条同类线路正交通过而互不干扰：
+
+- https://endfield.wiki.gg/wiki/Moulding_Unit
+- https://endfield.wiki.gg/wiki/Filling_Unit
+- https://endfield.wiki.gg/wiki/Reactor_Crucible
+- https://endfield.wiki.gg/wiki/Fluid_Pump
+- https://endfield.wiki.gg/wiki/Belt_Bridge
+- https://endfield.wiki.gg/wiki/Pipe_Bridge
+- https://endfield.wiki.gg/wiki/Pipe_Splitter
+- https://endfield.wiki.gg/wiki/Pipe_Converger
+
+公开页面仍未给出灌装机和反应池的逐格固体/流体端口细分。当前实现暂定灌装机左侧为固体输入、底侧为管道输入、右侧为固体输出；反应池左侧保留一条固体输入和一条管道输入，右侧两条为管道输出。该字段标为“待用户实机校正”，不得视为官方数据。
+
 ## 简体中文命名
 
-设备目录优先采用简体中文资料中的游戏内名称。当前固体生产链使用：`精炼炉`、`配件机`、`仓库取货口`、`供电桩`、`传送带`。配方示例采用 `蓝铁矿 → 蓝铁块` 与 `蓝铁块 → 铁制零件`。主要核对来源为终末地 Wiki 的简体中文工厂教程与设备页：
+设备目录优先采用简体中文资料中的游戏内名称。当前使用：`精炼炉`、`配件机`、`塑形机`、`灌装机`、`反应池`、`水泵`、`仓库取货口`、`供电桩`、`传送带`、`管道`。配方示例采用 `蓝铁矿 → 蓝铁块`、`蓝铁块 → 铁制零件`、`蓝铁块 ×2 → 蓝铁瓶`、`息壤 + 清水 → 液化息壤`。主要核对来源为终末地 Wiki 的简体中文工厂教程、设备页与配方模块：
 
 - https://endfield.games/zh-Hans/tutorials/factory/
 - https://endfield.games/zh-Hans/factory/buildings/furnance-1/
+- https://endfield.wiki.gg/wiki/Module:Recipe/Reactor_Crucible
 
-占地补充核对：参考 `eddy3721/arknights-endfield-bp-tool` 的 [`src/config/machines.ts`](https://github.com/eddy3721/arknights-endfield-bp-tool/blob/main/src/config/machines.ts)，仓库取货口为 `1×3`，单个输出端口位于中间格；本项目按相同占地与旋转规则实现。传送带额定带宽 `30/min` 与蓝铁块冶炼 `2s` 按用户提供的当前游戏数据记录。
+占地补充核对：参考 `eddy3721/arknights-endfield-bp-tool` 的 [`src/config/machines.ts`](https://github.com/eddy3721/arknights-endfield-bp-tool/blob/main/src/config/machines.ts)，仓库取货口为 `1×3`，单个输出端口位于中间格；本项目按相同占地与旋转规则实现。传送带额定带宽 `30/min`、蓝铁块冶炼 `2s` 与配件机 `2s/个` 按用户提供的当前游戏数据记录。
 
 仓库取货口首批固体物品清单包含 `蓝铁矿`、`紫晶矿`、`赤铜矿`、`蓝铁块`、`铁制零件`、`蓝铁粉末`、`紫晶纤维`、`紫晶零件`、`钢块`。简体中文名称和“矿物/工业产物”分类依据公开物品图鉴与配方页核对：
 
@@ -56,7 +70,7 @@ Alpha 版优先复用已登记的本地游戏相关图标；没有可用图标�
 - https://end.wiki/zh-Hans/factory/recipes/
 - https://wiki.biligame.com/zmd/物品图鉴
 
-其中新增的赤铜矿、紫晶矿、蓝铁粉末、紫晶纤维、紫晶零件、钢块、晶体外壳与紫晶装备原件图标为项目自制 SVG，并非游戏原图标。装备原件机、仓库存货口、分流器与汇流器在没有可登记游戏图标时同样使用项目自制蓝图风格 SVG。
+其中新增的赤铜矿、紫晶矿、蓝铁粉末、紫晶纤维、紫晶零件、钢块、晶体外壳、紫晶装备原件、蓝铁瓶、清水、息壤和液化息壤图标为项目自制 SVG，并非游戏原图标。装备原件机、塑形机、灌装机、反应池、水泵及新增物流部件同样使用项目自制蓝图风格 SVG。
 
 其他设备在来源未核实前仍按占位数据处理，并在 UI/数据层标明可信度。
 
@@ -72,7 +86,19 @@ Alpha 版优先复用已登记的本地游戏相关图标；没有可用图标�
 
 公开资料和游戏内社区复核一致支持传送带 `30/min`，即每条线路 2 秒 1 件。公开教程说明端口连接和传送带用途，但没有给出“每格移动耗时”这一独立空间参数：
 
+当前容量模型按用户提供的游戏行为实现：每个传送带格最多容纳 1 件物品。线路只需连接设备输出口即可接收物品；若没有有效输入端或目标库存已满，货物会停在末端并逐格向上游堆积，直到线路格数全部占满。
+
 - https://endfield.games/en/tutorials/factory/?t=fac-port
 - https://www.reddit.com/r/ArknightsEndfield/comments/1r7qztd/tips_for_aic_building/
 
 为避免用吞吐量冒充未公开字段，代码将两者分开：`BELT_HEADWAY_TICKS` 是已核实的 2 秒发货间隔；`BELT_CELL_TRAVEL_TICKS` 是可替换的空间模型参数。当前以一格等于一个物品间距，设为每格 2 秒，并在悬浮提示中直接显示线路格数和计算结果。获得可靠实测后只修改 `lib/belt-timing.ts`，不改库存、轮询和背压算法。
+
+## 管道时序
+
+官方物品和配方页面确认清水由水泵提取，反应池流体配方通常以 2 秒为周期。官方说明没有直接列出管道额定流量；当前 `120/min` 单管和 `60/min` 水泵来自多组玩家实测交叉核对，可信度低于传送带 `30/min`，因此集中保存在 `lib/belt-timing.ts` 并等待用户实机确认：
+
+- https://endfield.wiki.gg/wiki/Clean_Water
+- https://endfield.wiki.gg/wiki/Reactor_Crucible
+- https://www.reddit.com/r/Endfield/comments/1ra99eb/feeding_2_pumps_to_the_same_pipe_investigation_of/
+
+管道的吞吐、每格缓存、空间移动速度和颜色均为独立参数。当前每格缓存 4 个流体单位只用于有限队列与背压，不参与决定源设备的生产速率。
