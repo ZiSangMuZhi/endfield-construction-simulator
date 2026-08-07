@@ -13,9 +13,9 @@ const keyOf = (x: number, y: number) => `${x},${y}`;
 const tools: { kind: Kind; label: string; group: string; glyph: string; desc: string }[] = [
   { kind: "belt", label: "传送带", group: "物流", glyph: "→", desc: "固体 · 60/min" },
   { kind: "pipe", label: "管道", group: "物流", glyph: "≈", desc: "流体 · 90/min" },
-  { kind: "depot", label: "仓储接口", group: "物流", glyph: "D", desc: "输入 / 输出" },
-  { kind: "refiner", label: "精炼设备", group: "生产", glyph: "R", desc: "矿石 → 粉末" },
-  { kind: "fitter", label: "装配设备", group: "生产", glyph: "F", desc: "粉末 → 零件" },
+  { kind: "depot", label: "仓库取货口", group: "物流", glyph: "D", desc: "指定物品输出" },
+  { kind: "refiner", label: "精炼炉", group: "生产", glyph: "R", desc: "矿石 → 金属块" },
+  { kind: "fitter", label: "配件机", group: "生产", glyph: "F", desc: "金属块 → 零件" },
   { kind: "tank", label: "储液罐", group: "储存", glyph: "T", desc: "容量 600" },
 ];
 
@@ -144,7 +144,7 @@ export default function Home() {
                 const x = index % COLS; const y = Math.floor(index / COLS); const cell = grid[keyOf(x, y)];
                 const status = cell ? cellStatus(cell, running) : "";
                 const mask = cell && isTransport(cell.kind) ? [y > 0 && grid[keyOf(x,y-1)]?.kind === cell.kind ? "n":"", x < COLS-1 && grid[keyOf(x+1,y)]?.kind === cell.kind ? "e":"", y < ROWS-1 && grid[keyOf(x,y+1)]?.kind === cell.kind ? "s":"", x > 0 && grid[keyOf(x-1,y)]?.kind === cell.kind ? "w":""].join("") : "";
-                const machine = cell?.kind === "refiner" ? { recipe:"铁矿石 → 铁锭", state:running ? "生产中" : "已暂停", blocked:"否" } : cell?.kind === "fitter" ? { recipe:"铁锭 → 铁制零件", state:running ? "缺料等待" : "已暂停", blocked:"否" } : null;
+                const machine = cell?.kind === "refiner" ? { recipe:"蓝铁矿 ×1 → 蓝铁块 ×1", state:running ? "生产中" : "已暂停", blocked:"否" } : cell?.kind === "fitter" ? { recipe:"蓝铁块 ×1 → 铁制零件 ×1", state:running ? "缺料等待" : "已暂停", blocked:"否" } : null;
                 return <button key={index} className={`cell ${cell ? `placed ${cell.kind}` : ""} ${status}`} aria-label={`${x},${y}${cell ? ` ${cell.kind}` : ""}`}
                   onMouseDown={() => { setDrawing(true); paint(x, y); }} onMouseEnter={() => drawing && paint(x, y)} onMouseUp={() => setDrawing(false)}
                   onContextMenu={(e) => { e.preventDefault(); setGrid((old) => { const target=old[keyOf(x,y)]; if(!target)return old; const next={...old}; Object.keys(next).forEach(k=>{if(next[k].id===target.id)delete next[k]}); return next; }); }}>
@@ -162,12 +162,12 @@ export default function Home() {
           <div className="panel-heading"><span>生产监控</span><small>LIVE / 02</small></div>
           <div className="metric-grid"><div><small>设备</small><strong>{counts.devices}</strong></div><div><small>物流线</small><strong>{counts.belts + counts.pipes}</strong></div><div><small>功率</small><strong>42<span> kW</span></strong></div><div><small>效率</small><strong>{running ? "72" : "—"}<span>%</span></strong></div></div>
           <div className="section-title"><span>设备状态</span><small>{running ? "SIMULATION ACTIVE" : "SIMULATION PAUSED"}</small></div>
-          <div className="machine-card good"><div className="machine-icon">R</div><div><strong>精炼设备 #01</strong><small>{running ? "铁矿石 → 铁粉末" : "等待启动"}</small></div><em>{running ? "全速" : "暂停"}</em></div>
-          <div className={`machine-card ${running ? "warn" : ""}`}><div className="machine-icon">F</div><div><strong>装配设备 #01</strong><small>{running ? "输入不足 · 等待 1.8s" : "等待启动"}</small></div><em>{running ? "72%" : "暂停"}</em></div>
+          <div className="machine-card good"><div className="machine-icon">R</div><div><strong>精炼炉 #01</strong><small>{running ? "蓝铁矿 → 蓝铁块 · 未阻塞" : "等待启动"}</small></div><em>{running ? "全速" : "暂停"}</em></div>
+          <div className={`machine-card ${running ? "warn" : ""}`}><div className="machine-icon">F</div><div><strong>配件机 #01</strong><small>{running ? "蓝铁块 → 铁制零件 · 缺料 / 未阻塞" : "等待启动"}</small></div><em>{running ? "72%" : "暂停"}</em></div>
           <div className="section-title"><span>流量</span><small>PER MINUTE</small></div>
-          <div className="flow-row"><span>铁矿石</span><b>{running ? 30 : 0}</b><i style={{ width: running ? "54%" : 0 }} /></div>
-          <div className="flow-row"><span>铁粉末</span><b>{running ? 18 : 0}</b><i style={{ width: running ? "34%" : 0 }} /></div>
-          <div className="flow-row"><span>工业零件</span><b>{running ? 9 : 0}</b><i style={{ width: running ? "18%" : 0 }} /></div>
+          <div className="flow-row"><span>蓝铁矿</span><b>{running ? 30 : 0}</b><i style={{ width: running ? "54%" : 0 }} /></div>
+          <div className="flow-row"><span>蓝铁块</span><b>{running ? 18 : 0}</b><i style={{ width: running ? "34%" : 0 }} /></div>
+          <div className="flow-row"><span>铁制零件</span><b>{running ? 9 : 0}</b><i style={{ width: running ? "18%" : 0 }} /></div>
           <div className="clock-card"><span>模拟时钟</span><strong>{String(Math.floor(tick / 10)).padStart(2, "0")}:{String(tick % 10).padStart(2, "0")}</strong><small>× 1.0　·　演示配方数据</small></div>
         </aside>
       </section>

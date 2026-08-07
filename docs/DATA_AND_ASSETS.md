@@ -26,4 +26,11 @@ Alpha 版使用文字与 CSS 几何符号作为临时图标，避免让占位素
 - https://endfield.games/en/factory/buildings/furnance-1/
 - https://endfield.games/en/factory/buildings/component-mc-1/
 
+## 简体中文命名
+
+设备目录优先采用简体中文资料中的游戏内名称。当前已核对：`精炼炉`、`配件机`、`仓库取货口`、`储液罐`、`传送带`、`管道`。配方示例采用 `蓝铁矿 → 蓝铁块` 与 `蓝铁块 → 铁制零件`。主要核对来源为终末地 Wiki 的简体中文工厂教程与设备页：
+
+- https://endfield.games/zh-Hans/tutorials/factory/
+- https://endfield.games/zh-Hans/factory/buildings/furnance-1/
+
 其他设备在来源未核实前仍按占位数据处理，并在 UI/数据层标明可信度。
