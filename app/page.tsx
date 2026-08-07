@@ -47,10 +47,16 @@ type DeviceInventory = { input:Record<string,number>; output:Record<string,numbe
 type MachineDefinition = { name:string; recipe:string; width:number; height:number; image:string; inputs:{itemId:string;amount:number}[]; output:{itemId:string;amount:number}; durationTicks:number };
 type TransitItem = { id:string; routeId:string; itemId:string; position:number; previousPosition:number };
 type ItemStatSample = { second:number; produced:Record<string,number>; consumed:Record<string,number> };
+type ItemStatsChart = { produced:number[]; consumed:number[]; producedPath:string; consumedPath:string; producedTotal:number; consumedTotal:number };
 type SimulationState = { tick:number; inventories:Record<string,DeviceInventory>; processes:Record<string,number>; transits:TransitItem[]; routeCursor:Record<string,number>; laneReadyAt:Record<string,number>; routeTransfers:Record<string,number[]>; itemStats:ItemStatSample[] };
 const SOLID_INPUT_CAPACITY=50;
 const FLUID_INPUT_CAPACITY=50;
 const OUTPUT_CAPACITY=60;
+const STATS_HISTORY_SECONDS=300;
+const STATS_SMOOTHING_SECONDS=30;
+const STATS_SAMPLE_INTERVAL_SECONDS=5;
+const STATS_CHART_POINTS=Math.floor(STATS_HISTORY_SECONDS/STATS_SAMPLE_INTERVAL_SECONDS);
+const STATS_RETENTION_SECONDS=STATS_HISTORY_SECONDS+STATS_SMOOTHING_SECONDS;
 const totalInventory=(bucket:Record<string,number>)=>Object.values(bucket).reduce((sum,quantity)=>sum+quantity,0);
 const inputCapacityFor=(kind:Kind|undefined,transport:TransportKind)=>kind==="storagePort"?240:["splitter","merger","logisticsBridge","pipeSplitter","pipeMerger","pipeBridge"].includes(kind??"")?30:transport==="pipe"?FLUID_INPUT_CAPACITY:SOLID_INPUT_CAPACITY;
 const secondsToTicks=(seconds:number)=>Math.round(seconds*SIM_TICKS_PER_SECOND);
@@ -60,21 +66,21 @@ const emptySimulationState=():SimulationState=>({tick:0,inventories:{},processes
 
 const INDUSTRIAL_ITEMS:IndustrialItem[] = [
   {id:"blue-iron-ore",name:"蓝铁矿",category:"矿物",image:"/assets/items/blue-iron-ore.webp"},
-  {id:"purple-crystal-ore",name:"紫晶矿",category:"矿物",image:"/assets/items/purple-crystal-ore.svg"},
+  {id:"purple-crystal-ore",name:"紫晶矿",category:"矿物",image:"/assets/items/purple-crystal-ore.webp"},
   {id:"red-copper-ore",name:"赤铜矿",category:"矿物",image:"/assets/items/red-copper-ore.svg"},
   {id:"blue-iron-block",name:"蓝铁块",category:"工业产物",image:"/assets/items/blue-iron-block.webp"},
   {id:"iron-parts",name:"铁制零件",category:"工业产物",image:"/assets/items/iron-parts.webp"},
-  {id:"blue-iron-powder",name:"蓝铁粉末",category:"工业产物",image:"/assets/items/blue-iron-powder.svg"},
-  {id:"purple-crystal-fiber",name:"紫晶纤维",category:"工业产物",image:"/assets/items/purple-crystal-fiber.svg"},
-  {id:"purple-crystal-parts",name:"紫晶零件",category:"工业产物",image:"/assets/items/purple-crystal-parts.svg"},
-  {id:"steel-block",name:"钢块",category:"工业产物",image:"/assets/items/steel-block.svg"},
-  {id:"crystal-shell",name:"晶体外壳",category:"工业产物",image:"/assets/items/crystal-shell.svg"},
-  {id:"purple-equipment-component",name:"紫晶装备原件",category:"工业产物",image:"/assets/items/purple-equipment-component.svg"},
-  {id:"blue-iron-bottle",name:"蓝铁瓶",category:"工业产物",image:"/assets/items/blue-iron-bottle.svg"},
-  {id:"water-filled-blue-iron-bottle",name:"蓝铁瓶（清水）",category:"工业产物",image:"/assets/items/water-filled-blue-iron-bottle.svg"},
-  {id:"xiranite",name:"息壤",category:"工业产物",image:"/assets/items/xiranite.svg"},
+  {id:"blue-iron-powder",name:"蓝铁粉末",category:"工业产物",image:"/assets/items/blue-iron-powder.webp"},
+  {id:"purple-crystal-fiber",name:"紫晶纤维",category:"工业产物",image:"/assets/items/purple-crystal-fiber.webp"},
+  {id:"purple-crystal-parts",name:"紫晶零件",category:"工业产物",image:"/assets/items/purple-crystal-parts.webp"},
+  {id:"steel-block",name:"钢块",category:"工业产物",image:"/assets/items/steel-block.webp"},
+  {id:"crystal-shell",name:"晶体外壳",category:"工业产物",image:"/assets/items/crystal-shell.webp"},
+  {id:"purple-equipment-component",name:"紫晶装备原件",category:"工业产物",image:"/assets/items/purple-equipment-component.webp"},
+  {id:"blue-iron-bottle",name:"蓝铁瓶",category:"工业产物",image:"/assets/items/blue-iron-bottle.webp"},
+  {id:"water-filled-blue-iron-bottle",name:"蓝铁瓶（清水）",category:"工业产物",image:"/assets/items/water-filled-blue-iron-bottle.webp"},
+  {id:"xiranite",name:"息壤",category:"工业产物",image:"/assets/items/xiranite.webp"},
   {id:"clean-water",name:"清水",category:"流体",image:"/assets/items/clean-water.svg",color:"#a9dbea"},
-  {id:"liquid-xiranite",name:"液化息壤",category:"流体",image:"/assets/items/liquid-xiranite.svg",color:"#b8dfcf"},
+  {id:"liquid-xiranite",name:"液化息壤",category:"流体",image:"/assets/items/liquid-xiranite.webp",color:"#b8dfcf"},
 ];
 
 const itemTransport=(itemId:string):TransportKind=>INDUSTRIAL_ITEMS.find((item)=>item.id===itemId)?.category==="流体"?"pipe":"belt";
@@ -83,10 +89,10 @@ const inputTotalFor=(bucket:Record<string,number>,transport:TransportKind)=>Obje
 const MACHINE_DEFINITIONS:Record<ProductionKind,MachineDefinition> = {
   refiner:{name:"精炼炉",recipe:"蓝铁矿 ×1 → 蓝铁块 ×1",width:3,height:3,image:"/assets/machines/refinery.webp",inputs:[{itemId:"blue-iron-ore",amount:1}],output:{itemId:"blue-iron-block",amount:1},durationTicks:secondsToTicks(2)},
   fitter:{name:"配件机",recipe:"蓝铁块 ×1 → 铁制零件 ×1",width:3,height:3,image:"/assets/machines/assembler.webp",inputs:[{itemId:"blue-iron-block",amount:1}],output:{itemId:"iron-parts",amount:1},durationTicks:secondsToTicks(2)},
-  molder:{name:"塑形机",recipe:"蓝铁块 ×2 → 蓝铁瓶 ×1",width:3,height:3,image:"/assets/machines/molder.svg",inputs:[{itemId:"blue-iron-block",amount:2}],output:{itemId:"blue-iron-bottle",amount:1},durationTicks:secondsToTicks(2)},
-  filler:{name:"灌装机",recipe:"蓝铁瓶 ×1 + 清水 ×1 → 蓝铁瓶（清水） ×1",width:4,height:6,image:"/assets/machines/filler.svg",inputs:[{itemId:"blue-iron-bottle",amount:1},{itemId:"clean-water",amount:1}],output:{itemId:"water-filled-blue-iron-bottle",amount:1},durationTicks:secondsToTicks(2)},
-  reactor:{name:"反应池",recipe:"息壤 ×1 + 清水 ×1 → 液化息壤 ×1",width:5,height:5,image:"/assets/machines/reactor.svg",inputs:[{itemId:"xiranite",amount:1},{itemId:"clean-water",amount:1}],output:{itemId:"liquid-xiranite",amount:1},durationTicks:secondsToTicks(2)},
-  gearAssembler:{name:"装备原件机",recipe:"晶体外壳 ×5 + 紫晶纤维 ×5 → 紫晶装备原件 ×1",width:4,height:6,image:"/assets/machines/gear-assembler.svg",inputs:[{itemId:"crystal-shell",amount:5},{itemId:"purple-crystal-fiber",amount:5}],output:{itemId:"purple-equipment-component",amount:1},durationTicks:secondsToTicks(10)},
+  molder:{name:"塑形机",recipe:"蓝铁块 ×2 → 蓝铁瓶 ×1",width:3,height:3,image:"/assets/machines/molder.webp",inputs:[{itemId:"blue-iron-block",amount:2}],output:{itemId:"blue-iron-bottle",amount:1},durationTicks:secondsToTicks(2)},
+  filler:{name:"灌装机",recipe:"蓝铁瓶 ×1 + 清水 ×1 → 蓝铁瓶（清水） ×1",width:4,height:6,image:"/assets/machines/filler.webp",inputs:[{itemId:"blue-iron-bottle",amount:1},{itemId:"clean-water",amount:1}],output:{itemId:"water-filled-blue-iron-bottle",amount:1},durationTicks:secondsToTicks(2)},
+  reactor:{name:"反应池",recipe:"息壤 ×1 + 清水 ×1 → 液化息壤 ×1",width:5,height:5,image:"/assets/machines/reactor.webp",inputs:[{itemId:"xiranite",amount:1},{itemId:"clean-water",amount:1}],output:{itemId:"liquid-xiranite",amount:1},durationTicks:secondsToTicks(2)},
+  gearAssembler:{name:"装备原件机",recipe:"晶体外壳 ×5 + 紫晶纤维 ×5 → 紫晶装备原件 ×1",width:4,height:6,image:"/assets/machines/gear-assembler.webp",inputs:[{itemId:"crystal-shell",amount:5},{itemId:"purple-crystal-fiber",amount:5}],output:{itemId:"purple-equipment-component",amount:1},durationTicks:secondsToTicks(10)},
   waterPump:{name:"水泵",recipe:"水源 → 清水 ×1",width:2,height:2,image:"/assets/machines/water-pump.svg",inputs:[],output:{itemId:"clean-water",amount:1},durationTicks:secondsToTicks(1)},
 };
 
@@ -302,20 +308,20 @@ const DEVICE_CATEGORIES:DeviceCategory[]=["全部","资源开采","仓储存取"
 const tools: { kind: Kind; label: string; type:"tool"|"device"; category?:DeviceCategory; glyph: string; desc: string; image?: string }[] = [
   { kind: "belt", label: "传送带", type:"tool", glyph: "BELT", desc: "固体 · 30/min", image:"/assets/ui/belt-tool.svg" },
   { kind: "pipe", label: "管道", type:"tool", glyph: "PIPE", desc: "流体 · 120/min", image:"/assets/ui/pipe-tool.svg" },
-  { kind: "depot", label: "仓库取货口", type:"device", category:"仓储存取", glyph: "D", desc: "1×3 · 指定物品输出" },
-  { kind: "storagePort", label: "仓库存货口", type:"device", category:"仓储存取", glyph: "ST", desc: "1×3 · 回收入库", image:"/assets/machines/storage-port.svg" },
-  { kind: "splitter", label: "分流器", type:"device", category:"仓储存取", glyph: "S", desc: "1 入 · 3 出", image:"/assets/machines/splitter.svg" },
-  { kind: "merger", label: "汇流器", type:"device", category:"仓储存取", glyph: "M", desc: "3 入 · 1 出", image:"/assets/machines/merger.svg" },
-  { kind: "logisticsBridge", label: "物流桥", type:"device", category:"仓储存取", glyph: "BR", desc: "两条传送带正交跨越", image:"/assets/machines/logistics-bridge.svg" },
+  { kind: "depot", label: "仓库取货口", type:"device", category:"仓储存取", glyph: "D", desc: "1×3 · 指定物品输出", image:"/assets/machines/warehouse-pickup-port.webp" },
+  { kind: "storagePort", label: "仓库存货口", type:"device", category:"仓储存取", glyph: "ST", desc: "1×3 · 回收入库", image:"/assets/machines/storage-port.webp" },
+  { kind: "splitter", label: "分流器", type:"device", category:"仓储存取", glyph: "S", desc: "1 入 · 3 出", image:"/assets/machines/splitter.webp" },
+  { kind: "merger", label: "汇流器", type:"device", category:"仓储存取", glyph: "M", desc: "3 入 · 1 出", image:"/assets/machines/merger.webp" },
+  { kind: "logisticsBridge", label: "物流桥", type:"device", category:"仓储存取", glyph: "BR", desc: "两条传送带正交跨越", image:"/assets/machines/logistics-bridge.webp" },
   { kind: "pipeSplitter", label: "管道分流器", type:"device", category:"仓储存取", glyph: "PS", desc: "1 入 · 至多 3 出", image:"/assets/machines/pipe-splitter.svg" },
   { kind: "pipeMerger", label: "管道汇流器", type:"device", category:"仓储存取", glyph: "PM", desc: "至多 3 入 · 1 出", image:"/assets/machines/pipe-merger.svg" },
   { kind: "pipeBridge", label: "管道桥", type:"device", category:"仓储存取", glyph: "PB", desc: "两条管道正交跨越", image:"/assets/machines/pipe-bridge.svg" },
   { kind: "refiner", label: "精炼炉", type:"device", category:"基础生产", glyph: "R", desc: "矿石 → 金属块", image:"/assets/machines/refinery.webp" },
   { kind: "fitter", label: "配件机", type:"device", category:"基础生产", glyph: "F", desc: "金属块 → 零件", image:"/assets/machines/assembler.webp" },
-  { kind: "molder", label: "塑形机", type:"device", category:"基础生产", glyph: "MO", desc: "3×3 · 容器塑形", image:"/assets/machines/molder.svg" },
-  { kind: "gearAssembler", label: "装备原件机", type:"device", category:"合成制造", glyph: "GA", desc: "6×4 · 双物料合成", image:"/assets/machines/gear-assembler.svg" },
-  { kind: "filler", label: "灌装机", type:"device", category:"合成制造", glyph: "FI", desc: "4×6 · 固体与流体输入", image:"/assets/machines/filler.svg" },
-  { kind: "reactor", label: "反应池", type:"device", category:"合成制造", glyph: "RC", desc: "5×5 · 固液反应", image:"/assets/machines/reactor.svg" },
+  { kind: "molder", label: "塑形机", type:"device", category:"基础生产", glyph: "MO", desc: "3×3 · 容器塑形", image:"/assets/machines/molder.webp" },
+  { kind: "gearAssembler", label: "装备原件机", type:"device", category:"合成制造", glyph: "GA", desc: "6×4 · 双物料合成", image:"/assets/machines/gear-assembler.webp" },
+  { kind: "filler", label: "灌装机", type:"device", category:"合成制造", glyph: "FI", desc: "4×6 · 固体与流体输入", image:"/assets/machines/filler.webp" },
+  { kind: "reactor", label: "反应池", type:"device", category:"合成制造", glyph: "RC", desc: "5×5 · 固液反应", image:"/assets/machines/reactor.webp" },
   { kind: "waterPump", label: "水泵", type:"device", category:"资源开采", glyph: "WP", desc: "2×2 · 清水 60/min", image:"/assets/machines/water-pump.svg" },
   { kind: "powerPole", label: "供电桩", type:"device", category:"电力供应", glyph: "PWR", desc: "2×2 · 供电范围 12×12", image:"/assets/machines/supply-pole.webp" },
 ];
@@ -368,7 +374,6 @@ export default function Home() {
   const [hoveredEntity,setHoveredEntity]=useState<{id:string;x:number;y:number}|null>(null);
   const [running, setRunning] = useState(false);
   const [simulation,setSimulation]=useState<SimulationState>(emptySimulationState);
-  const [selectedStatsItemId,setSelectedStatsItemId]=useState("blue-iron-ore");
   const [inventoryItemId,setInventoryItemId]=useState("blue-iron-ore");
   const [inventoryAmount,setInventoryAmount]=useState(10);
   const [notice, setNotice] = useState("演示蓝图已载入 · 按 E 规划传送带");
@@ -539,14 +544,16 @@ export default function Home() {
         if(sourceKind!=="depot")dispatched.forEach((route)=>{const itemId=route.itemId!;sourceBucket[itemId]=Math.max(0,(sourceBucket[itemId]??0)-1)});
         if(dispatched.length)routeCursor[sourceId]=(routes.indexOf(dispatched[dispatched.length-1])+1)%routes.length;
       });
-      const second=Math.floor(tick/SIM_TICKS_PER_SECOND),itemStats=(previous.itemStats??[]).map((sample)=>({second:sample.second,produced:{...sample.produced},consumed:{...sample.consumed}}));
+      const second=Math.floor(tick/SIM_TICKS_PER_SECOND);
+      let itemStats=previous.itemStats??[];
       if(Object.keys(producedThisTick).length||Object.keys(consumedThisTick).length){
         const sample=itemStats[itemStats.length-1];
-        if(sample?.second===second){Object.entries(producedThisTick).forEach(([itemId,amount])=>addQuantity(sample.produced,itemId,amount));Object.entries(consumedThisTick).forEach(([itemId,amount])=>addQuantity(sample.consumed,itemId,amount))}
-        else itemStats.push({second,produced:producedThisTick,consumed:consumedThisTick});
+        if(sample?.second===second){const produced={...sample.produced},consumed={...sample.consumed};Object.entries(producedThisTick).forEach(([itemId,amount])=>addQuantity(produced,itemId,amount));Object.entries(consumedThisTick).forEach(([itemId,amount])=>addQuantity(consumed,itemId,amount));itemStats=[...itemStats.slice(0,-1),{second,produced,consumed}]}
+        else itemStats=[...itemStats,{second,produced:producedThisTick,consumed:consumedThisTick}];
       }
+      if(itemStats[0]?.second<second-STATS_RETENTION_SECONDS)itemStats=itemStats.filter((sample)=>sample.second>=second-STATS_RETENTION_SECONDS);
       // Storage-port delivery is inventory transfer, not consumption; recipe removal is the only consumption event.
-      return {tick,inventories,processes,transits:activeTransits,routeCursor,laneReadyAt,routeTransfers,itemStats:itemStats.filter((sample)=>sample.second>=second-64)};
+      return {tick,inventories,processes,transits:activeTransits,routeCursor,laneReadyAt,routeTransfers,itemStats};
     }),SIM_TICK_MS);
     return ()=>window.clearInterval(timer);
   },[running,grid,connectedFlowRoutes,powerZones]);
@@ -623,16 +630,23 @@ export default function Home() {
     simulation.itemStats.forEach((sample)=>{Object.keys(sample.produced).forEach((itemId)=>itemIds.add(itemId));Object.keys(sample.consumed).forEach((itemId)=>itemIds.add(itemId))});
     return INDUSTRIAL_ITEMS.filter((item)=>itemIds.has(item.id));
   },[connectedFlowRoutes,grid,simulation.inventories,simulation.itemStats]);
-  const selectedStatsItem=involvedStatsItems.find((item)=>item.id===selectedStatsItemId)??involvedStatsItems[0];
-  const statsChart=useMemo(()=>{
-    const currentSecond=Math.floor(simulation.tick/SIM_TICKS_PER_SECOND),samples=new Map(simulation.itemStats.map((sample)=>[sample.second,sample]));
-    const chartItemId=selectedStatsItem?.id??"";
-    const seconds=Array.from({length:60},(_,index)=>currentSecond-59+index);
-    const producedAmounts=seconds.map((second)=>samples.get(second)?.produced[chartItemId]??0),consumedAmounts=seconds.map((second)=>samples.get(second)?.consumed[chartItemId]??0);
-    const rollingRate=(amounts:number[])=>amounts.map((_,index)=>{const start=Math.max(0,index-4),window=amounts.slice(start,index+1);return window.reduce((sum,amount)=>sum+amount,0)*60/window.length});
-    const produced=rollingRate(producedAmounts),consumed=rollingRate(consumedAmounts),maximum=Math.max(1,...produced,...consumed);
-    return {produced,consumed,maximum,producedPath:chartPath(produced,maximum),consumedPath:chartPath(consumed,maximum),producedTotal:producedAmounts.reduce((sum,amount)=>sum+amount,0),consumedTotal:consumedAmounts.reduce((sum,amount)=>sum+amount,0)};
-  },[selectedStatsItem?.id,simulation.itemStats,simulation.tick]);
+  const statsCharts=useMemo(()=>{
+    const charts=new Map<string,ItemStatsChart>(),currentSecond=elapsedSeconds,samples=new Map(simulation.itemStats.map((sample)=>[sample.second,sample]));
+    const earliestSecond=currentSecond-(STATS_CHART_POINTS-1)*STATS_SAMPLE_INTERVAL_SECONDS-STATS_SMOOTHING_SECONDS+1;
+    const secondCount=currentSecond-earliestSecond+1;
+    involvedStatsItems.forEach((item)=>{
+      const producedAmounts=Array.from({length:secondCount},(_,index)=>samples.get(earliestSecond+index)?.produced[item.id]??0);
+      const consumedAmounts=Array.from({length:secondCount},(_,index)=>samples.get(earliestSecond+index)?.consumed[item.id]??0);
+      const prefix=(amounts:number[])=>{const values=[0];amounts.forEach((amount)=>values.push(values[values.length-1]+amount));return values};
+      const producedPrefix=prefix(producedAmounts),consumedPrefix=prefix(consumedAmounts);
+      const sumRange=(values:number[],fromSecond:number,toSecond:number)=>{const start=Math.max(0,fromSecond-earliestSecond),end=Math.min(secondCount,toSecond-earliestSecond+1);return end<=start?0:values[end]-values[start]};
+      const pointSeconds=Array.from({length:STATS_CHART_POINTS},(_,index)=>currentSecond-(STATS_CHART_POINTS-1-index)*STATS_SAMPLE_INTERVAL_SECONDS);
+      const rate=(values:number[])=>pointSeconds.map((pointSecond)=>sumRange(values,pointSecond-STATS_SMOOTHING_SECONDS+1,pointSecond)*60/STATS_SMOOTHING_SECONDS);
+      const produced=rate(producedPrefix),consumed=rate(consumedPrefix),maximum=Math.max(1,...produced,...consumed);
+      charts.set(item.id,{produced,consumed,producedPath:chartPath(produced,maximum,240,38),consumedPath:chartPath(consumed,maximum,240,38),producedTotal:sumRange(producedPrefix,currentSecond-STATS_HISTORY_SECONDS+1,currentSecond),consumedTotal:sumRange(consumedPrefix,currentSecond-STATS_HISTORY_SECONDS+1,currentSecond)});
+    });
+    return charts;
+  },[elapsedSeconds,involvedStatsItems,simulation.itemStats]);
   const snapCandidate=useMemo(()=>{
     if(!beltBuildMode||!hoveredEntity)return null;
     const type:PortType=beltDraft?"input":"output";
@@ -1244,18 +1258,15 @@ export default function Home() {
           <div className="metric-grid"><div><small>设备</small><strong>{counts.devices}</strong></div><div><small>物流格</small><strong>{counts.belts}<span> 带</span> / {counts.pipes}<span> 管</span></strong></div><div><small>已供电</small><strong>{productionStates.filter((state)=>state.powered).length}<span> / {productionStates.length}</span></strong></div><div><small>效率</small><strong>{running&&productionStates.length ? Math.round(productionStates.filter((state)=>state.status==="running").length/productionStates.length*100) : "—"}<span>%</span></strong></div></div>
           <div className="section-title"><span>设备状态</span><small>{running ? "SIMULATION ACTIVE" : "SIMULATION PAUSED"}</small></div>
           {productionStates.map((state,index)=>{const stateText=state.status==="running"?"生产中":state.status==="waiting"?"周期等待":state.status==="starved"?"缺少输入":state.status==="blocked"?"输出阻塞":state.status==="unpowered"?"未供电":"暂停",definition=MACHINE_DEFINITIONS[state.kind];return <div key={state.id} className={`machine-card ${state.status==="running"?"good":state.status!=="idle"?"warn":""}`}><div className="machine-icon"><img src={definition.image} alt=""/></div><div><strong>{definition.name} #{String(index+1).padStart(2,"0")}</strong><small>{definition.recipe} · {stateText} · {state.powered?"供电正常":"供电断开"}</small></div><em>{state.status==="running"?`${state.progress}%`:stateText}</em></div>})}
-          <div className="section-title"><span>产销统计</span><small>ROLLING 60 SECONDS</small></div>
+          <div className="section-title"><span>产销统计</span><small>ROLLING 5 MINUTES</small></div>
           <section className="production-stats" aria-label="产线物品产出量与消耗量统计">
-            {involvedStatsItems.length&&selectedStatsItem?<>
-              <label className="stat-selector"><span><img src={selectedStatsItem.image} alt=""/>统计物品</span><select value={selectedStatsItem.id} onChange={(event)=>setSelectedStatsItemId(event.target.value)}>{involvedStatsItems.map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-              <div className="stat-chart-head"><strong>{selectedStatsItem.name}</strong><small>5 秒滚动平均 · 单位/min</small></div>
-              <svg className="stat-chart" viewBox="0 0 240 82" role="img" aria-label={`${selectedStatsItem.name}产出与消耗折线图`}>
-                <path className="stat-grid-line" d="M 0 1 H 240 M 0 41 H 240 M 0 81 H 240"/>
-                <path className="stat-line produced" d={statsChart.producedPath}/>
-                <path className="stat-line consumed" d={statsChart.consumedPath}/>
-              </svg>
-              <div className="stat-legend"><span className="produced"><i/>产出 <b>{Math.round(statsChart.produced.at(-1)??0)}/min</b></span><span className="consumed"><i/>消耗 <b>{Math.round(statsChart.consumed.at(-1)??0)}/min</b></span></div>
-              <div className="stat-totals"><span>最近 60 秒产出 <b>{statsChart.producedTotal}</b></span><span>消耗 <b>{statsChart.consumedTotal}</b></span></div>
+            {involvedStatsItems.length?<>
+              <div className="stat-overview"><span className="produced"><i/>产出</span><span className="consumed"><i/>消耗</span><small>30 秒平滑 · 5 秒采样</small></div>
+              <div className="stat-list">{involvedStatsItems.map((item)=>{const chart=statsCharts.get(item.id)!;return <article className="stat-item" key={item.id}>
+                <header><span><img src={item.image} alt=""/><strong>{item.name}</strong></span><div className="stat-rates"><b className="produced">产 {Math.round(chart.produced.at(-1)??0)}</b><b className="consumed">耗 {Math.round(chart.consumed.at(-1)??0)}</b><small>/min</small></div></header>
+                <svg className="stat-chart" viewBox="0 0 240 38" role="img" aria-label={`${item.name}最近五分钟产出与消耗折线图`}><path className="stat-grid-line" d="M 0 1 H 240 M 0 19 H 240 M 0 37 H 240"/><path className="stat-line produced" d={chart.producedPath}/><path className="stat-line consumed" d={chart.consumedPath}/></svg>
+                <footer><span>5 分钟</span><span>产出 <b>{chart.producedTotal}</b></span><span>消耗 <b>{chart.consumedTotal}</b></span></footer>
+              </article>})}</div>
               <small className="stat-note">仓库存货口收货仅计库存转移，不计消耗</small>
             </>:<div className="stat-empty">放置并连接生产设备后显示产销历史</div>}
           </section>
