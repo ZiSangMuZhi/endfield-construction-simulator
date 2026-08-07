@@ -19,3 +19,11 @@
 
 Alpha 版使用文字与 CSS 几何符号作为临时图标，避免让占位素材混入正式资产。后续若用户提供合法导出的个人素材包，可通过映射表替换。
 
+## 已核实设备占地
+
+2026-08-07 依据 END Wiki 的 Placement 字段，精炼设备与装配设备均为 `3 × 3 × 4`，规划器取前两维作为地面占地 `3 × 3`。来源：
+
+- https://endfield.games/en/factory/buildings/furnance-1/
+- https://endfield.games/en/factory/buildings/component-mc-1/
+
+其他设备在来源未核实前仍按占位数据处理，并在 UI/数据层标明可信度。

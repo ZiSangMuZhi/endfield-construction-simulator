@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 type Kind = "belt" | "pipe" | "refiner" | "fitter" | "tank" | "depot";
-type Cell = { kind: Kind; rotation: number; id: string };
+type Cell = { kind: Kind; rotation: number; id: string; root?: boolean };
 type Grid = Record<string, Cell>;
 
 const COLS = 18;
@@ -19,18 +19,32 @@ const tools: { kind: Kind; label: string; group: string; glyph: string; desc: st
   { kind: "tank", label: "储液罐", group: "储存", glyph: "T", desc: "容量 600" },
 ];
 
-const initial: Grid = {
+const baseInitial: Grid = {
   "2,5": { kind: "depot", rotation: 0, id: "a" },
   "3,5": { kind: "belt", rotation: 0, id: "b" },
   "4,5": { kind: "belt", rotation: 0, id: "c" },
-  "5,5": { kind: "refiner", rotation: 0, id: "d" },
-  "6,5": { kind: "belt", rotation: 0, id: "e" },
-  "7,5": { kind: "belt", rotation: 0, id: "f" },
-  "8,5": { kind: "fitter", rotation: 0, id: "g" },
-  "11,7": { kind: "tank", rotation: 0, id: "h" },
-  "12,7": { kind: "pipe", rotation: 0, id: "i" },
-  "13,7": { kind: "pipe", rotation: 0, id: "j" },
+  "4,4": { kind: "belt", rotation: 0, id: "c2" },
+  "4,3": { kind: "belt", rotation: 0, id: "c3" },
+  "8,4": { kind: "belt", rotation: 0, id: "e" },
+  "8,3": { kind: "belt", rotation: 0, id: "f" },
+  "11,8": { kind: "tank", rotation: 0, id: "h", root: true },
+  "12,8": { kind: "pipe", rotation: 0, id: "i" },
+  "13,8": { kind: "pipe", rotation: 0, id: "j" },
+  "13,7": { kind: "pipe", rotation: 0, id: "j2" },
+  "13,6": { kind: "pipe", rotation: 0, id: "j3" },
 };
+
+const initial = (() => {
+  const next = { ...baseInitial };
+  const seed = (kind: "refiner" | "fitter", sx: number, sy: number, id: string) => {
+    for (let dy = 0; dy < 3; dy++) for (let dx = 0; dx < 3; dx++)
+      next[keyOf(sx + dx, sy + dy)] = { kind, rotation: 0, id, root: dx === 1 && dy === 1 };
+  };
+  seed("refiner", 5, 2, "d"); seed("fitter", 9, 2, "g");
+  return next;
+})();
+
+const isTransport = (kind?: Kind) => kind === "belt" || kind === "pipe";
 
 function cellStatus(cell: Cell, running: boolean) {
   if (!running || !["refiner", "fitter"].includes(cell.kind)) return "idle";
@@ -55,7 +69,7 @@ export default function Home() {
   const counts = useMemo(() => {
     const values = Object.values(grid);
     return {
-      devices: values.filter((c) => !["belt", "pipe"].includes(c.kind)).length,
+      devices: new Set(values.filter((c) => !isTransport(c.kind)).map((c) => c.id)).size,
       belts: values.filter((c) => c.kind === "belt").length,
       pipes: values.filter((c) => c.kind === "pipe").length,
     };
@@ -63,7 +77,19 @@ export default function Home() {
 
   function paint(x: number, y: number) {
     const key = keyOf(x, y);
-    setGrid((old) => ({ ...old, [key]: { kind: selected, rotation: 0, id: crypto.randomUUID() } }));
+    setGrid((old) => {
+      if (isTransport(selected)) {
+        if (old[key] && !isTransport(old[key].kind)) return old;
+        return { ...old, [key]: { kind: selected, rotation: 0, id: crypto.randomUUID(), root: true } };
+      }
+      const size = selected === "refiner" || selected === "fitter" ? 3 : 1;
+      if (x + size > COLS || y + size > ROWS) return old;
+      const cells = Array.from({ length: size * size }, (_, i) => keyOf(x + i % size, y + Math.floor(i / size)));
+      if (cells.some((k) => old[k])) { setNotice("设备占地与现有设施冲突"); return old; }
+      const id = crypto.randomUUID(); const next = { ...old };
+      cells.forEach((k, i) => next[k] = { kind: selected, rotation: 0, id, root: size === 1 || i === 4 });
+      return next;
+    });
   }
 
   function save() {
@@ -117,10 +143,13 @@ export default function Home() {
               {Array.from({ length: COLS * ROWS }).map((_, index) => {
                 const x = index % COLS; const y = Math.floor(index / COLS); const cell = grid[keyOf(x, y)];
                 const status = cell ? cellStatus(cell, running) : "";
+                const mask = cell && isTransport(cell.kind) ? [y > 0 && grid[keyOf(x,y-1)]?.kind === cell.kind ? "n":"", x < COLS-1 && grid[keyOf(x+1,y)]?.kind === cell.kind ? "e":"", y < ROWS-1 && grid[keyOf(x,y+1)]?.kind === cell.kind ? "s":"", x > 0 && grid[keyOf(x-1,y)]?.kind === cell.kind ? "w":""].join("") : "";
+                const machine = cell?.kind === "refiner" ? { recipe:"铁矿石 → 铁锭", state:running ? "生产中" : "已暂停", blocked:"否" } : cell?.kind === "fitter" ? { recipe:"铁锭 → 铁制零件", state:running ? "缺料等待" : "已暂停", blocked:"否" } : null;
                 return <button key={index} className={`cell ${cell ? `placed ${cell.kind}` : ""} ${status}`} aria-label={`${x},${y}${cell ? ` ${cell.kind}` : ""}`}
                   onMouseDown={() => { setDrawing(true); paint(x, y); }} onMouseEnter={() => drawing && paint(x, y)} onMouseUp={() => setDrawing(false)}
-                  onContextMenu={(e) => { e.preventDefault(); setGrid((old) => { const next = { ...old }; delete next[keyOf(x, y)]; return next; }); }}>
-                    {cell && <><span className="cell-glyph">{tools.find((t) => t.kind === cell.kind)?.glyph}</span>{status === "waiting" && <span className="wait-ring" />}</>}
+                  onContextMenu={(e) => { e.preventDefault(); setGrid((old) => { const target=old[keyOf(x,y)]; if(!target)return old; const next={...old}; Object.keys(next).forEach(k=>{if(next[k].id===target.id)delete next[k]}); return next; }); }}>
+                    {cell && isTransport(cell.kind) && <span className="transport-track" data-mask={mask || "e"}><i className="seg n"/><i className="seg e"/><i className="seg s"/><i className="seg w"/>{running && (x+y)%2===0 && <b className={`item-icon ${cell.kind === "pipe" ? "fluid" : "solid"}`}>{cell.kind === "pipe" ? "●" : "◆"}</b>}</span>}
+                    {cell && !isTransport(cell.kind) && <><span className={`cell-glyph ${cell.root ? "root" : "part"}`}>{cell.root && <><b>{tools.find((t) => t.kind === cell.kind)?.glyph}</b>{machine && <span className="machine-overlay"><strong>{machine.recipe}</strong><small className={status}>● {machine.state}</small><em>阻塞：{machine.blocked}</em></span>}</>}</span>{cell.root && status === "waiting" && <span className="wait-ring" />}</>}
                   </button>;
               })}
             </div>
