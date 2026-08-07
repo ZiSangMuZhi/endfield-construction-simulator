@@ -1,13 +1,13 @@
 "use client";
-/* eslint-disable @next/next/no-img-element -- local game and generated icons are rendered at native blueprint scale */
+/* eslint-disable @next/next/no-img-element -- local game icons are rendered at native blueprint scale */
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BELT_HEADWAY_TICKS, BELT_ITEMS_PER_MINUTE, PIPE_HEADWAY_TICKS, PIPE_ITEMS_PER_MINUTE, PIPE_LANE_PROFILE, SIM_TICK_MS, SIM_TICKS_PER_SECOND, advanceBeltLane, advancePipeLane, beltLaneCanAccept, beltLaneIsFull, beltTravelSeconds, nextLaneReadyTick, pipeLaneCanAccept, pipeLaneIsFull } from "../lib/belt-timing";
 import { RADIAL_CONFIRM_DELAY_MS, RADIAL_HOLD_DELAY_MS, RADIAL_PREOPEN_TOLERANCE_PX, RadialAction, radialSelection } from "../lib/radial-menu";
 
 type TransportKind = "belt" | "pipe";
-type Kind = TransportKind | "refiner" | "crusher" | "fitter" | "molder" | "filler" | "sealer" | "grinder" | "seedPicker" | "planter" | "reactor" | "forge" | "gearAssembler" | "waterPump" | "splitter" | "merger" | "logisticsBridge" | "pipeSplitter" | "pipeMerger" | "pipeBridge" | "storagePort" | "tank" | "depot" | "powerPole";
-type ProductionKind = "refiner" | "crusher" | "fitter" | "molder" | "filler" | "sealer" | "grinder" | "seedPicker" | "planter" | "reactor" | "forge" | "gearAssembler" | "waterPump";
+type Kind = TransportKind | "refiner" | "crusher" | "fitter" | "molder" | "filler" | "dismantler" | "sealer" | "grinder" | "seedPicker" | "planter" | "reactor" | "purifier" | "forge" | "gearAssembler" | "waterPump" | "splitter" | "merger" | "logisticsBridge" | "pipeSplitter" | "pipeMerger" | "pipeBridge" | "storagePort" | "tank" | "depot" | "powerPole";
+type ProductionKind = "refiner" | "crusher" | "fitter" | "molder" | "filler" | "dismantler" | "sealer" | "grinder" | "seedPicker" | "planter" | "reactor" | "purifier" | "forge" | "gearAssembler" | "waterPump";
 type MachineMode = "solid" | "fluid";
 type DeviceCategory = "全部" | "资源开采" | "仓储存取" | "基础生产" | "合成制造" | "电力供应" | "功能设备" | "战斗辅助" | "种植调配";
 type Direction = 0 | 1 | 2 | 3;
@@ -34,20 +34,20 @@ type MachineState = { id:string; kind:ProductionKind; recipeId:string; status:"i
 type PowerZone = { id:string; x:number; y:number; size:number };
 type Point = { x:number; y:number };
 type PortType = "input" | "output";
-type PortSpec = { x:number; y:number; side:Direction; transport?:TransportKind; modes?:MachineMode[] };
+type PortSpec = { x:number; y:number; side:Direction; transport?:TransportKind; modes?:MachineMode[]; outputIndex?:number };
 type EquipmentLayout = { width:number; height:number; inputs:PortSpec[]; outputs:PortSpec[] };
-type ResolvedPort = { key:string; entityId:string; entityKind:Kind; type:PortType; index:number; side:Direction; transport:TransportKind; cellX:number; cellY:number; externalX:number; externalY:number };
+type ResolvedPort = { key:string; entityId:string; entityKind:Kind; type:PortType; index:number; side:Direction; transport:TransportKind; cellX:number; cellY:number; externalX:number; externalY:number; outputIndex?:number };
 type BeltReplan = { routeId:string; replaceKeys:string[]; anchorEntry?:Direction };
 type BeltJoin = { key:string; rotation:Direction };
 type BeltDraft = { kind:TransportKind; cells:Point[]; waypoints:Point[]; sourcePort?:ResolvedPort; targetPort?:ResolvedPort; join?:BeltJoin; replan?:BeltReplan };
 type RadialMenuState = { entityId:string; x:number; y:number; pointerId:number; active:RadialAction|null; phase:"open"|"confirming"; angle:number; distance:number };
 type RadialGesture = { entityId:string; pointerId:number; startX:number; startY:number; currentX:number; currentY:number; opened:boolean };
 type ConnectedFlowRoute = FlowRoute & { sourcePort?:ResolvedPort; targetPort?:ResolvedPort; sourceConnected:boolean; targetConnected:boolean; valid:boolean; itemId?:string; itemName:string; itemImage:string };
-type IndustrialItem = { id:string; name:string; category:"矿物"|"工业产物"|"流体"; image:string; color?:string };
+type IndustrialItem = { id:string; name:string; category:"矿物"|"工业产物"|"流体"; image?:string; color?:string };
 type DeviceInventory = { input:Record<string,number>; output:Record<string,number> };
 type RecipeQuantity = {itemId:string;amount:number};
 type MachineRecipe = {id:string;name:string;mode:MachineMode;inputs:RecipeQuantity[];outputs:RecipeQuantity[];durationTicks:number};
-type MachineDefinition = { name:string; width:number; height:number; image:string; powerUsage:number; recipes:MachineRecipe[] };
+type MachineDefinition = { name:string; width:number; height:number; image?:string; powerUsage:number; recipes:MachineRecipe[] };
 type TransitItem = { id:string; routeId:string; itemId:string; position:number; previousPosition:number };
 type ItemStatSample = { second:number; produced:Record<string,number>; consumed:Record<string,number> };
 type ItemStatsChart = { produced:number[]; consumed:number[]; producedPath:string; consumedPath:string; producedTotal:number; consumedTotal:number };
@@ -89,6 +89,9 @@ const INDUSTRIAL_ITEMS:IndustrialItem[] = [
   {id:"blue-iron-bottle",name:"蓝铁瓶",category:"工业产物",image:"/assets/items/blue-iron-bottle.webp"},
   {id:"purple-crystal-bottle",name:"紫晶质瓶",category:"工业产物",image:"/assets/items/purple-crystal-bottle.webp"},
   {id:"water-filled-blue-iron-bottle",name:"蓝铁瓶（清水）",category:"工业产物",image:"/assets/items/water-filled-blue-iron-bottle.webp"},
+  {id:"purple-water-bottle",name:"紫晶质瓶（清水）",category:"工业产物"},
+  {id:"purple-sewage-bottle",name:"紫晶质瓶（污水）",category:"工业产物"},
+  {id:"purple-jincao-bottle",name:"紫晶质瓶（锦草溶液）",category:"工业产物"},
   {id:"qiao-flower",name:"荞花",category:"工业产物",image:"/assets/items/qiao-flower.webp"},
   {id:"qiao-flower-powder",name:"荞花粉末",category:"工业产物",image:"/assets/items/qiao-flower-powder.webp"},
   {id:"qiao-flower-seed",name:"荞花种子",category:"工业产物",image:"/assets/items/qiao-flower-seed.webp"},
@@ -104,10 +107,18 @@ const INDUSTRIAL_ITEMS:IndustrialItem[] = [
   {id:"low-capacity-valley-battery",name:"低容谷地电池",category:"工业产物",image:"/assets/items/low-capacity-valley-battery.webp"},
   {id:"industrial-explosive",name:"工业爆炸物",category:"工业产物",image:"/assets/items/industrial-explosive.webp"},
   {id:"xiranite",name:"息壤",category:"工业产物",image:"/assets/items/xiranite.webp"},
+  {id:"cuprium-powder",name:"赤铜粉末",category:"工业产物"},
+  {id:"xircon",name:"壤晶",category:"工业产物"},
+  {id:"hetonite",name:"赫铜块",category:"工业产物"},
   {id:"clean-water",name:"清水",category:"流体",image:"/assets/items/clean-water.svg",color:"#a9dbea"},
   {id:"sewage",name:"污水",category:"流体",image:"/assets/items/sewage.svg",color:"#b7c9aa"},
   {id:"jincao-solution",name:"锦草溶液",category:"流体",image:"/assets/items/jincao-solution.webp",color:"#c9e0cf"},
   {id:"liquid-xiranite",name:"液化息壤",category:"流体",image:"/assets/items/liquid-xiranite.webp",color:"#b8dfcf"},
+  {id:"inert-xircon-effluent",name:"惰性壤晶废液",category:"流体",color:"#d8d2bd"},
+  {id:"xircon-effluent",name:"壤晶废液",category:"流体",color:"#c7d7ba"},
+  {id:"precipitation-acid",name:"沉积酸",category:"流体",color:"#ead9aa"},
+  {id:"cuprium-solution",name:"赤铜溶液",category:"流体",color:"#e4b9a9"},
+  {id:"hetonite-solution",name:"赫铜溶液",category:"流体",color:"#d7c0d2"},
 ];
 
 const itemTransport=(itemId:string):TransportKind=>INDUSTRIAL_ITEMS.find((item)=>item.id===itemId)?.category==="流体"?"pipe":"belt";
@@ -138,6 +149,15 @@ const MACHINE_DEFINITIONS:Record<ProductionKind,MachineDefinition> = {
   filler:{name:"灌装机",width:4,height:6,image:"/assets/machines/filler.webp",powerUsage:20,recipes:[
     recipe("buck-capsule","荞愈胶囊","solid",[{itemId:"purple-crystal-bottle",amount:5},{itemId:"qiao-flower-powder",amount:5}],[{itemId:"qiao-capsule",amount:1}],10),
     recipe("water-bottled","蓝铁瓶（清水）","fluid",[{itemId:"blue-iron-bottle",amount:1},{itemId:"clean-water",amount:1}],[{itemId:"water-filled-blue-iron-bottle",amount:1}],2),
+    recipe("amethyst-water-bottled","紫晶质瓶（清水）","fluid",[{itemId:"purple-crystal-bottle",amount:1},{itemId:"clean-water",amount:1}],[{itemId:"purple-water-bottle",amount:1}],2),
+    recipe("amethyst-sewage-bottled","紫晶质瓶（污水）","fluid",[{itemId:"purple-crystal-bottle",amount:1},{itemId:"sewage",amount:1}],[{itemId:"purple-sewage-bottle",amount:1}],2),
+    recipe("amethyst-jincao-bottled","紫晶质瓶（锦草溶液）","fluid",[{itemId:"purple-crystal-bottle",amount:1},{itemId:"jincao-solution",amount:1}],[{itemId:"purple-jincao-bottle",amount:1}],2),
+  ]},
+  dismantler:{name:"拆解机",width:4,height:6,powerUsage:20,recipes:[
+    recipe("dismantle-amethyst-water","拆解紫晶质瓶（清水）","fluid",[{itemId:"purple-water-bottle",amount:1}],[{itemId:"purple-crystal-bottle",amount:1},{itemId:"clean-water",amount:1}],2),
+    recipe("dismantle-amethyst-sewage","拆解紫晶质瓶（污水）","fluid",[{itemId:"purple-sewage-bottle",amount:1}],[{itemId:"purple-crystal-bottle",amount:1},{itemId:"sewage",amount:1}],2),
+    recipe("dismantle-amethyst-jincao","拆解紫晶质瓶（锦草溶液）","fluid",[{itemId:"purple-jincao-bottle",amount:1}],[{itemId:"purple-crystal-bottle",amount:1},{itemId:"jincao-solution",amount:1}],2),
+    recipe("dismantle-ferrium-water","拆解蓝铁瓶（清水）","fluid",[{itemId:"water-filled-blue-iron-bottle",amount:1}],[{itemId:"blue-iron-bottle",amount:1},{itemId:"clean-water",amount:1}],2),
   ]},
   sealer:{name:"封装机",width:4,height:6,image:"/assets/machines/sealer.webp",powerUsage:20,recipes:[
     recipe("lc-valley-battery","低容谷地电池","solid",[{itemId:"purple-crystal-parts",amount:5},{itemId:"source-powder",amount:10}],[{itemId:"low-capacity-valley-battery",amount:1}],10),
@@ -159,6 +179,14 @@ const MACHINE_DEFINITIONS:Record<ProductionKind,MachineDefinition> = {
   reactor:{name:"反应池",width:5,height:5,image:"/assets/machines/reactor.webp",powerUsage:20,recipes:[
     recipe("liquid-xiranite","液化息壤","fluid",[{itemId:"xiranite",amount:1},{itemId:"clean-water",amount:1}],[{itemId:"liquid-xiranite",amount:1}],2),
     recipe("jincao-solution","锦草溶液","fluid",[{itemId:"jincao-powder",amount:1},{itemId:"clean-water",amount:1}],[{itemId:"jincao-solution",amount:1}],2),
+    recipe("cuprium-solution","赤铜溶液","fluid",[{itemId:"cuprium-powder",amount:1},{itemId:"precipitation-acid",amount:1}],[{itemId:"cuprium-solution",amount:1}],2),
+    recipe("xircon-effluents","壤晶废液与惰性壤晶废液","fluid",[{itemId:"liquid-xiranite",amount:1},{itemId:"sewage",amount:1}],[{itemId:"xircon-effluent",amount:1},{itemId:"inert-xircon-effluent",amount:1}],2),
+    recipe("xircon","壤晶","fluid",[{itemId:"xircon-effluent",amount:2},{itemId:"blue-iron-powder",amount:1}],[{itemId:"xircon",amount:1},{itemId:"sewage",amount:1}],2),
+    recipe("hetonite","赫铜块","fluid",[{itemId:"hetonite-solution",amount:2},{itemId:"blue-iron-powder",amount:1}],[{itemId:"hetonite",amount:1},{itemId:"sewage",amount:1}],2),
+  ]},
+  purifier:{name:"提纯机",width:5,height:5,powerUsage:50,recipes:[
+    recipe("purify-xircon-effluent","提纯壤晶废液","fluid",[{itemId:"inert-xircon-effluent",amount:4}],[{itemId:"xircon-effluent",amount:1},{itemId:"clean-water",amount:1}],2),
+    recipe("purify-cuprium-solution","赫铜溶液","fluid",[{itemId:"cuprium-solution",amount:4}],[{itemId:"hetonite-solution",amount:1},{itemId:"precipitation-acid",amount:1}],2),
   ]},
   forge:{name:"天有洪炉",width:5,height:5,image:"/assets/machines/forge-of-the-sky.webp",powerUsage:50,recipes:[
     recipe("xiranite","息壤","fluid",[{itemId:"stable-carbon",amount:2},{itemId:"clean-water",amount:1}],[{itemId:"xiranite",amount:1}],2),
@@ -185,11 +213,13 @@ const EQUIPMENT_LAYOUTS: Partial<Record<Kind,EquipmentLayout>> = {
   fitter:{width:3,height:3,inputs:edgePorts(3,2,0),outputs:edgePorts(3,0,2)},
   molder:{width:3,height:3,inputs:edgePorts(3,2,0),outputs:edgePorts(3,0,2)},
   filler:{width:4,height:6,inputs:[...edgePorts(6,2,0),{x:1,y:5,side:1,transport:"pipe",modes:["fluid"]}],outputs:edgePorts(6,0,3)},
+  dismantler:{width:4,height:6,inputs:[{x:0,y:2,side:2}],outputs:[{x:3,y:1,side:0,outputIndex:0},{x:3,y:4,side:0,transport:"pipe",outputIndex:1}]},
   sealer:{width:4,height:6,inputs:edgePorts(6,2,0),outputs:edgePorts(6,0,3)},
   grinder:{width:4,height:6,inputs:edgePorts(6,2,0),outputs:edgePorts(6,0,3)},
   seedPicker:{width:5,height:5,inputs:edgePorts(5,2,0),outputs:edgePorts(5,0,4)},
   planter:{width:5,height:5,inputs:[...edgePorts(5,2,0),{x:2,y:4,side:1,transport:"pipe",modes:["fluid"]}],outputs:edgePorts(5,0,4)},
-  reactor:{width:5,height:5,inputs:[{x:0,y:1,side:2},{x:0,y:3,side:2,transport:"pipe"}],outputs:[{x:4,y:1,side:0,transport:"pipe"},{x:4,y:3,side:0,transport:"pipe"}]},
+  reactor:{width:5,height:5,inputs:[{x:0,y:1,side:2},{x:0,y:3,side:2,transport:"pipe"}],outputs:[{x:4,y:1,side:0,transport:"pipe",outputIndex:1},{x:4,y:3,side:0,transport:"pipe",outputIndex:0}]},
+  purifier:{width:5,height:5,inputs:[{x:0,y:2,side:2,transport:"pipe"}],outputs:[{x:4,y:1,side:0,transport:"pipe",outputIndex:1},{x:4,y:3,side:0,transport:"pipe",outputIndex:0}]},
   forge:{width:5,height:5,inputs:[...edgePorts(5,2,0),{x:2,y:4,side:1,transport:"pipe"}],outputs:edgePorts(5,0,4)},
   gearAssembler:{width:4,height:6,inputs:edgePorts(6,2,0),outputs:edgePorts(6,0,3)},
   waterPump:{width:2,height:2,inputs:[],outputs:[{x:1,y:1,side:0,transport:"pipe"}]},
@@ -230,7 +260,7 @@ function resolvePorts(grid:Grid):ResolvedPort[] {
       const rotated=rotatePort(spec,layout.width,layout.height,entity.rotation);
       const [dx,dy]=DELTAS[rotated.side];
       const cellX=minX+rotated.x,cellY=minY+rotated.y;
-      ports.push({key:`${entityId}:${type}:${index}`,entityId,entityKind:entity.kind,type,index,side:rotated.side,transport:spec.transport??"belt",cellX,cellY,externalX:cellX+dx,externalY:cellY+dy});
+      ports.push({key:`${entityId}:${type}:${index}`,entityId,entityKind:entity.kind,type,index,side:rotated.side,transport:spec.transport??"belt",cellX,cellY,externalX:cellX+dx,externalY:cellY+dy,outputIndex:spec.outputIndex});
     };
     layout.inputs.filter((port)=>!port.modes||Boolean(mode&&port.modes.includes(mode))).forEach((port,index)=>append(port,"input",index));
     layout.outputs.filter((port)=>!port.modes||Boolean(mode&&port.modes.includes(mode))).forEach((port,index)=>append(port,"output",index));
@@ -309,6 +339,11 @@ function pipeFillRatio(transits:TransitItem[],cellIndex:number,cellCount:number)
   return Math.min(1,units/PIPE_LANE_PROFILE.unitsPerCell);
 }
 
+function AssetThumb({src,label,className=""}:{src?:string;label:string;className?:string}) {
+  if(src)return <img className={className||undefined} src={src} alt={label}/>;
+  return <span className={`content-placeholder ${className}`.trim()} role="img" aria-label={`${label}图像待补`}><strong>{Array.from(label).slice(0,2).join("")}</strong><small>待补图</small></span>;
+}
+
 function pointOnRoute(route:FlowRoute,progress:number) {
   const routeDistance=Math.max(0,Math.min(route.cells.length-.0001,progress*route.cells.length));
   const index=Math.floor(routeDistance),local=routeDistance-index,{x,y,cell}=route.cells[index];
@@ -334,7 +369,7 @@ function CargoRouteSprites({transits,route,running,stalled}:{transits:TransitIte
     frame=requestAnimationFrame(animate);
     return()=>cancelAnimationFrame(frame);
   },[route,running,transits]);
-  return <g ref={routeRef} className={`route-cargo-sprites ${running?"moving":"paused"} ${stalled?"stalled":""}`}>{transits.map((transit)=>{const renderPosition=running?transit.previousPosition:transit.position,initial=pointOnRoute(route,renderPosition/route.cells.length),item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===transit.itemId);return <g key={transit.id} className="flow-cargo" transform={`translate(${initial.x} ${initial.y})`} data-transit-id={transit.id} data-position={transit.position.toFixed(3)}><rect x="-.3" y="-.3" width=".6" height=".6" rx=".05"/><image href={item?.image??""} x="-.25" y="-.25" width=".5" height=".5" preserveAspectRatio="xMidYMid meet"/></g>})}</g>;
+  return <g ref={routeRef} className={`route-cargo-sprites ${running?"moving":"paused"} ${stalled?"stalled":""}`}>{transits.map((transit)=>{const renderPosition=running?transit.previousPosition:transit.position,initial=pointOnRoute(route,renderPosition/route.cells.length),item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===transit.itemId);return <g key={transit.id} className="flow-cargo" transform={`translate(${initial.x} ${initial.y})`} data-transit-id={transit.id} data-position={transit.position.toFixed(3)}><rect x="-.3" y="-.3" width=".6" height=".6" rx=".05"/>{item?.image?<image href={item.image} x="-.25" y="-.25" width=".5" height=".5" preserveAspectRatio="xMidYMid meet"/>:<text className="flow-placeholder" x="0" y=".075" textAnchor="middle">{Array.from(item?.name??"物")[0]}</text>}</g>})}</g>;
 }
 
 function roundedPath(points: { x:number; y:number; cell:Cell }[]) {
@@ -412,9 +447,11 @@ const tools: { kind: Kind; label: string; type:"tool"|"device"; category?:Device
   { kind: "planter", label: "种植机", type:"device", category:"基础生产", glyph: "PL", desc: "5×5 · 固体/液体模式", image:"/assets/machines/planter.webp" },
   { kind: "gearAssembler", label: "装备原件机", type:"device", category:"合成制造", glyph: "GA", desc: "6×4 · 双物料合成", image:"/assets/machines/gear-assembler.webp" },
   { kind: "filler", label: "灌装机", type:"device", category:"合成制造", glyph: "FI", desc: "4×6 · 固体与流体输入", image:"/assets/machines/filler.webp" },
+  { kind: "dismantler", label: "拆解机", type:"device", category:"合成制造", glyph: "DM", desc: "6×4 · 瓶体与流体拆解" },
   { kind: "sealer", label: "封装机", type:"device", category:"合成制造", glyph: "PK", desc: "6×4 · 电池与爆炸物", image:"/assets/machines/sealer.webp" },
   { kind: "grinder", label: "研磨机", type:"device", category:"合成制造", glyph: "GR", desc: "6×4 · 粉末精细研磨", image:"/assets/machines/grinder.webp" },
   { kind: "reactor", label: "反应池", type:"device", category:"合成制造", glyph: "RC", desc: "5×5 · 固液反应", image:"/assets/machines/reactor.webp" },
+  { kind: "purifier", label: "提纯机", type:"device", category:"合成制造", glyph: "PU", desc: "5×5 · 双液体输出" },
   { kind: "forge", label: "天有洪炉", type:"device", category:"合成制造", glyph: "FS", desc: "5×5 · 息壤合成", image:"/assets/machines/forge-of-the-sky.webp" },
   { kind: "waterPump", label: "水泵", type:"device", category:"资源开采", glyph: "WP", desc: "2×2 · 清水 60/min", image:"/assets/machines/water-pump.svg" },
   { kind: "powerPole", label: "供电桩", type:"device", category:"电力供应", glyph: "PWR", desc: "2×2 · 供电范围 12×12", image:"/assets/machines/supply-pole.webp" },
@@ -536,7 +573,8 @@ export default function Home() {
       const sourceDefinition=sourcePort&&sourcePort.entityKind in MACHINE_DEFINITIONS?MACHINE_DEFINITIONS[sourcePort.entityKind as ProductionKind]:undefined;
       const sourceCell=sourceDefinition?Object.values(grid).find((cell)=>cell.id===sourcePort?.entityId):undefined;
       const sourceRecipe=sourceDefinition?activeRecipe(sourceDefinition,sourceCell?.recipeId):undefined;
-      const sourceOutput=sourceRecipe?.outputs.find((output)=>itemTransport(output.itemId)===route.kind);
+      const indexedOutput=sourcePort?.outputIndex==null?undefined:sourceRecipe?.outputs[sourcePort.outputIndex];
+      const sourceOutput=indexedOutput&&itemTransport(indexedOutput.itemId)===route.kind?indexedOutput:sourceRecipe?.outputs.find((output)=>itemTransport(output.itemId)===route.kind);
       const item=sourcePort?.entityKind==="depot"?INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===depotCell?.itemId):INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===sourceOutput?.itemId);
       return {...route,sourcePort,targetPort,sourceConnected:Boolean(sourcePort),targetConnected:Boolean(targetPort),valid:Boolean(sourcePort),itemId:item?.id,itemName:item?.name??(sourcePort?.entityKind==="depot"?"取货口未选择物品":"未接入输出口"),itemImage:item?.image??""};
     });
@@ -1208,14 +1246,14 @@ export default function Home() {
         <aside className="library panel">
           <div className="editor-tools">
             <p>工具</p>
-            {tools.filter((tool)=>tool.type==="tool").map((tool)=><button key={tool.kind} className={`tool ${selected===tool.kind&&!selectionMode&&beltBuildMode===tool.kind?"active":""}`} onClick={()=>{const kind=tool.kind as TransportKind;if(beltBuildMode)finishBeltBuild();else activateBeltMode(kind)}}><span className={`tool-glyph ${tool.kind}`}>{tool.image?<img src={tool.image} alt=""/>:tool.glyph}</span><span><strong>{tool.label}</strong><small>{tool.desc}</small></span><kbd className="tool-key">{tool.kind==="pipe"?"Q":"E"}</kbd></button>)}
+            {tools.filter((tool)=>tool.type==="tool").map((tool)=><button key={tool.kind} className={`tool ${selected===tool.kind&&!selectionMode&&beltBuildMode===tool.kind?"active":""}`} onClick={()=>{const kind=tool.kind as TransportKind;if(beltBuildMode)finishBeltBuild();else activateBeltMode(kind)}}><span className={`tool-glyph ${tool.kind}`}><AssetThumb src={tool.image} label={tool.label}/></span><span><strong>{tool.label}</strong><small>{tool.desc}</small></span><kbd className="tool-key">{tool.kind==="pipe"?"Q":"E"}</kbd></button>)}
             <button className={`tool selection-tool ${selectionMode ? "active" : ""}`} onClick={()=>{if(beltBuildMode)finishBeltBuild();setSelectionMode(true);setPickedEntity(null);setPlacementPreview(null);setNotice("X · 单击设备或传送带即可选中")}}>
               <span className="tool-glyph">SEL</span><span><strong>选择 / 编辑</strong><small>单击选中 · Del 拆除</small></span><kbd className="tool-key">X</kbd>
             </button>
           </div>
           <div className="device-catalog">
             <div className="device-catalog-head"><strong>设备</strong><div className="device-tabs" aria-label="游戏设备分类">{DEVICE_CATEGORIES.map((category)=><button key={category} className={deviceCategory===category?"active":""} onClick={()=>setDeviceCategory(category)}>{category}</button>)}</div></div>
-            <div className="device-list">{tools.filter((tool)=>tool.type==="device"&&(deviceCategory==="全部"||tool.category===deviceCategory)).map((tool)=><button key={tool.kind} className="tool" onPointerDown={(event)=>beginCatalogPointer(event,tool.kind)} onPointerMove={updateCatalogPointer} onPointerUp={finishCatalogPointer} onPointerCancel={cancelCatalogPointer} aria-label={`拖动添加${tool.label}`}><span className={`tool-glyph ${tool.kind}`}>{tool.image?<img src={tool.image} alt=""/>:tool.glyph}</span><span><strong>{tool.label}</strong><small>{tool.desc}</small></span></button>)}{!tools.some((tool)=>tool.type==="device"&&(deviceCategory==="全部"||tool.category===deviceCategory))&&<span className="empty-category">该分类设备将在数据核实后加入</span>}</div>
+            <div className="device-list">{tools.filter((tool)=>tool.type==="device"&&(deviceCategory==="全部"||tool.category===deviceCategory)).map((tool)=><button key={tool.kind} className="tool" onPointerDown={(event)=>beginCatalogPointer(event,tool.kind)} onPointerMove={updateCatalogPointer} onPointerUp={finishCatalogPointer} onPointerCancel={cancelCatalogPointer} aria-label={`拖动添加${tool.label}`}><span className={`tool-glyph ${tool.kind}`}><AssetThumb src={tool.image} label={tool.label}/></span><span><strong>{tool.label}</strong><small>{tool.desc}</small></span></button>)}{!tools.some((tool)=>tool.type==="device"&&(deviceCategory==="全部"||tool.category===deviceCategory))&&<span className="empty-category">该分类设备将在数据核实后加入</span>}</div>
           </div>
           <div className="hint"><kbd>E</kbd> 开始 / 完成　<kbd>单击</kbd> 路径点　<kbd>右键</kbd> 取消本条</div>
         </aside>
@@ -1246,7 +1284,7 @@ export default function Home() {
             </div>}
             {(selectedEntity||selectedRoute) && <div className="selection-toolbar">
               <span><kbd>X</kbd> 已选中 <strong>{selectedEntity?tools.find((tool)=>tool.kind===selectedEntity.kind)?.label:`${selectedRoute?.kind==="pipe"?"管道":"传送带"}线路 · ${selectedRoute?.cells.length} 格`}</strong>{pickedEntity && <em>{pickedEntity.mode === "move" ? "移动中" : "复制中"}</em>}</span>
-              {selectedEntity?.kind==="depot"&&<label className="depot-item-select"><span>{selectedDepotItem&&<img src={selectedDepotItem.image} alt=""/>}输出物品</span><select aria-label="仓库取货口输出物品" value={selectedDepotItem?.id??""} onChange={(event)=>setDepotItem(selectedEntity.id,event.target.value)}><option value="" disabled>选择工业物品</option>{(["矿物","工业产物"] as const).map((category)=><optgroup key={category} label={category}>{INDUSTRIAL_ITEMS.filter((item)=>item.category===category).map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</optgroup>)}</select></label>}
+              {selectedEntity?.kind==="depot"&&<label className="depot-item-select"><span>{selectedDepotItem&&<AssetThumb src={selectedDepotItem.image} label={selectedDepotItem.name}/>}输出物品</span><select aria-label="仓库取货口输出物品" value={selectedDepotItem?.id??""} onChange={(event)=>setDepotItem(selectedEntity.id,event.target.value)}><option value="" disabled>选择工业物品</option>{(["矿物","工业产物"] as const).map((category)=><optgroup key={category} label={category}>{INDUSTRIAL_ITEMS.filter((item)=>item.category===category).map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</optgroup>)}</select></label>}
               <button onClick={()=>prepareSelectedPlacement("copy")}><kbd>C</kbd> 复制</button>
               <button onClick={rotateSelected}><kbd>R</kbd> 旋转</button>
               <button onClick={()=>prepareSelectedPlacement("move")}><kbd>M</kbd> 移动</button>
@@ -1262,15 +1300,15 @@ export default function Home() {
               </>}
               <section className="inventory-section solid"><div className="inventory-heading"><strong>固体输入库存</strong><span>{selectedSolidInputTotal} / {inputCapacityFor(selectedEntity.kind,"belt")}</span></div>
                 <div className="inventory-meter"><i style={{width:`${Math.min(100,selectedSolidInputTotal/inputCapacityFor(selectedEntity.kind,"belt")*100)}%`}}/></div>
-                <div className="inventory-list">{selectedSolidInputItemIds.length?selectedSolidInputItemIds.map((itemId)=>{const item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===itemId);return <div key={itemId}><span>{item&&<img src={item.image} alt=""/>}{item?.name??itemId}</span><b>{selectedInventory.input[itemId]??0}</b></div>}):<small>暂无固体物品</small>}</div>
+                <div className="inventory-list">{selectedSolidInputItemIds.length?selectedSolidInputItemIds.map((itemId)=>{const item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===itemId);return <div key={itemId}><span>{item&&<AssetThumb src={item.image} label={item.name}/>} {item?.name??itemId}</span><b>{selectedInventory.input[itemId]??0}</b></div>}):<small>暂无固体物品</small>}</div>
               </section>
               <section className="inventory-section fluid"><div className="inventory-heading"><strong>液体输入库存</strong><span>{selectedFluidInputTotal} / {inputCapacityFor(selectedEntity.kind,"pipe")}</span></div>
                 <div className="inventory-meter fluid"><i style={{width:`${Math.min(100,selectedFluidInputTotal/inputCapacityFor(selectedEntity.kind,"pipe")*100)}%`}}/></div>
-                <div className="inventory-list">{selectedFluidInputItemIds.length?selectedFluidInputItemIds.map((itemId)=>{const item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===itemId);return <div key={itemId}><span>{item&&<img src={item.image} alt=""/>}{item?.name??itemId}</span><b>{selectedInventory.input[itemId]??0}</b></div>}):<small>暂无液体</small>}</div>
+                <div className="inventory-list">{selectedFluidInputItemIds.length?selectedFluidInputItemIds.map((itemId)=>{const item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===itemId);return <div key={itemId}><span>{item&&<AssetThumb src={item.image} label={item.name}/>} {item?.name??itemId}</span><b>{selectedInventory.input[itemId]??0}</b></div>}):<small>暂无液体</small>}</div>
               </section>
               <section><div className="inventory-heading"><strong>产出库存</strong><span>{totalInventory(selectedInventory.output)} / {OUTPUT_CAPACITY}</span></div>
                 <div className="inventory-meter output"><i style={{width:`${Math.min(100,totalInventory(selectedInventory.output)/OUTPUT_CAPACITY*100)}%`}}/></div>
-                <div className="inventory-list">{selectedOutputItemIds.length?selectedOutputItemIds.map((itemId)=>{const item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===itemId);return <div key={itemId}><span>{item&&<img src={item.image} alt=""/>}{item?.name??itemId}</span><b>{selectedInventory.output[itemId]??0}</b></div>}):<small>暂无物品</small>}</div>
+                <div className="inventory-list">{selectedOutputItemIds.length?selectedOutputItemIds.map((itemId)=>{const item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===itemId);return <div key={itemId}><span>{item&&<AssetThumb src={item.image} label={item.name}/>} {item?.name??itemId}</span><b>{selectedInventory.output[itemId]??0}</b></div>}):<small>暂无物品</small>}</div>
               </section>
               <section className="inventory-inject"><strong>直接放入库存</strong><select aria-label="库存物品" value={inventoryItemId} onChange={(event)=>setInventoryItemId(event.target.value)}>{INDUSTRIAL_ITEMS.map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</select><input aria-label="放入数量" type="number" min="1" max="60" value={inventoryAmount} onChange={(event)=>setInventoryAmount(Math.max(1,Number(event.target.value)))}/><div><button onClick={()=>addInventory(selectedEntityId,"input",inventoryItemId,inventoryAmount)}>放入输入库存</button><button onClick={()=>addInventory(selectedEntityId,"output",inventoryItemId,inventoryAmount)}>放入产出库存</button></div></section>
               <footer>{inventoryFullIds.has(selectedEntityId)?"对应介质库存已满 · 相连物流暂停，设备边框标红":"固体与液体输入分别计容 · 产物按输出线路轮询分配"}</footer>
@@ -1279,8 +1317,8 @@ export default function Home() {
             <div ref={gridRef} className={`grid ${panning ? "is-panning" : ""} ${pickedEntity?"is-placing":""} ${running ? "simulation-running" : ""}`} style={{ gridTemplateColumns: `repeat(${cols}, 1fr)`, aspectRatio:`${cols}/${rows}`, transform:`translate(${pan.x}px,${pan.y}px) scale(${zoom})` }}
               onMouseMove={(event)=>{const rect=event.currentTarget.getBoundingClientRect();if(beltBuildMode){const x=Math.max(0,Math.min(cols-1,Math.floor((event.clientX-rect.left)/rect.width*cols)));const y=Math.max(0,Math.min(rows-1,Math.floor((event.clientY-rect.top)/rect.height*rows)));setBeltPreviewPoint((current)=>current?.x===x&&current?.y===y?current:{x,y})}if(pickedEntity){const x=Math.max(0,Math.min(cols-pickedWidth,Math.floor((event.clientX-rect.left)/rect.width*cols)));const y=Math.max(0,Math.min(rows-pickedHeight,Math.floor((event.clientY-rect.top)/rect.height*rows)));setPlacementPreview({x,y})}}}
               onMouseLeave={()=>{setHoveredEntity(null);setBeltPreviewPoint(null)}}>
-              {pickedEntity&&placementPreview&&<><span className={`placement-snap ${placementValid?"valid":"invalid"}`} style={{left:`${placementPreview.x/cols*100}%`,top:`${placementPreview.y/rows*100}%`,width:`${pickedWidth/cols*100}%`,height:`${pickedHeight/rows*100}%`}}/><span className="placement-ghost" style={{left:`${placementPreview.x/cols*100}%`,top:`${placementPreview.y/rows*100}%`,width:`${pickedWidth/cols*100}%`,height:`${pickedHeight/rows*100}%`}}>{pickedEntity.sourceType==="entity"&&<>{pickedEntity.image&&<img src={pickedEntity.image} alt=""/>}<strong>{pickedEntity.label}</strong></>}</span></>}
-              {catalogDrag&&catalogPreview&&<><span className={`placement-snap catalog-snap ${catalogPlacementValid?"valid":"invalid"}`} style={{left:`${catalogPreview.x/cols*100}%`,top:`${catalogPreview.y/rows*100}%`,width:`${catalogWidth/cols*100}%`,height:`${catalogHeight/rows*100}%`}}/><span className="placement-ghost catalog-ghost" style={{left:`${catalogPreview.x/cols*100}%`,top:`${catalogPreview.y/rows*100}%`,width:`${catalogWidth/cols*100}%`,height:`${catalogHeight/rows*100}%`}}>{tools.find((tool)=>tool.kind===catalogDrag)?.image&&<img src={tools.find((tool)=>tool.kind===catalogDrag)!.image} alt=""/>}<strong>{tools.find((tool)=>tool.kind===catalogDrag)?.label}</strong></span></>}
+              {pickedEntity&&placementPreview&&<><span className={`placement-snap ${placementValid?"valid":"invalid"}`} style={{left:`${placementPreview.x/cols*100}%`,top:`${placementPreview.y/rows*100}%`,width:`${pickedWidth/cols*100}%`,height:`${pickedHeight/rows*100}%`}}/><span className="placement-ghost" style={{left:`${placementPreview.x/cols*100}%`,top:`${placementPreview.y/rows*100}%`,width:`${pickedWidth/cols*100}%`,height:`${pickedHeight/rows*100}%`}}>{pickedEntity.sourceType==="entity"&&<><AssetThumb src={pickedEntity.image} label={pickedEntity.label}/><strong>{pickedEntity.label}</strong></>}</span></>}
+              {catalogDrag&&catalogPreview&&<><span className={`placement-snap catalog-snap ${catalogPlacementValid?"valid":"invalid"}`} style={{left:`${catalogPreview.x/cols*100}%`,top:`${catalogPreview.y/rows*100}%`,width:`${catalogWidth/cols*100}%`,height:`${catalogHeight/rows*100}%`}}/><span className="placement-ghost catalog-ghost" style={{left:`${catalogPreview.x/cols*100}%`,top:`${catalogPreview.y/rows*100}%`,width:`${catalogWidth/cols*100}%`,height:`${catalogHeight/rows*100}%`}}><AssetThumb src={tools.find((tool)=>tool.kind===catalogDrag)?.image} label={tools.find((tool)=>tool.kind===catalogDrag)?.label??"设备"}/><strong>{tools.find((tool)=>tool.kind===catalogDrag)?.label}</strong></span></>}
               {showPowerZones && <svg className="power-overlay" viewBox={`0 0 ${cols} ${rows}`} preserveAspectRatio="none" aria-hidden="true">
                 {powerZones.map((zone)=><rect key={zone.id} x={zone.x} y={zone.y} width={zone.size} height={zone.size} rx=".16"/>)}
               </svg>}
@@ -1357,8 +1395,8 @@ export default function Home() {
                     setNotice("设备只能从底部目录拖到画布上添加");
                   }} onMouseEnter={() => {if(beltBuildMode)setHoveredEntity(baseCell&&!isTransport(baseCell.kind)?{id:baseCell.id,x,y}:null)}} onMouseLeave={()=>{if(beltBuildMode&&hoveredEntity?.id===baseCell?.id)setHoveredEntity(null)}}
                   onContextMenu={(e) => {e.preventDefault();if(beltBuildMode){cancelBeltDraft();return}deleteAt(x,y,hoverTransport)}}>
-                    {baseCell && !isTransport(baseCell.kind) && <>{baseCell.root && <span style={footprintStyle} className={`cell-glyph root ${!machine ? "compact" : ""} ${baseCell.kind==="powerPole"?"power-pole":""} ${entitySelected?"selected-root":""} ${deviceInventoryFull?"inventory-full":""}`}><b>{machineImage ? <img src={machineImage} alt={tools.find((t) => t.kind === baseCell.kind)?.label}/> : tools.find((t) => t.kind === baseCell.kind)?.image ? <img src={tools.find((t) => t.kind === baseCell.kind)?.image} alt={tools.find((t) => t.kind === baseCell.kind)?.label}/> : tools.find((t) => t.kind === baseCell.kind)?.glyph}</b>{baseCell.kind==="depot"&&<span className="depot-source">{depotItem?<><img src={depotItem.image} alt=""/><small>{depotItem.name}</small></>:<small>未选择物品</small>}</span>}{machine && <span className="machine-overlay"><strong className="machine-name">{machine.name}</strong><span className="machine-recipe">{machine.recipe}</span><small className={status}>状态 · {machine.state}</small><small className={`power-state ${machineState?.powered?"powered":"unpowered"}`}>供电 · {machineState?.powered?"正常":"断开"}</small><em>阻塞 · {machine.blocked}</em><span className="machine-progress"><i><b style={{width:`${processProgress}%`}}/></i><em>{processing ? `${processProgress}% · 剩余 ${remainingSeconds}s` : status==="unpowered" ? "等待供电 · --" : status==="starved" ? "缺少输入 · --" : status==="blocked" ? "输出阻塞 · --" : running ? "周期等待 · --" : "未启动 · --"}</em></span></span>}{baseCell.kind==="powerPole"&&<span className="power-pole-label"><strong>供电桩</strong><small>12 × 12</small></span>}</span>}{cellPorts.map((port)=><span key={port.key} className={`port-marker ${port.type} ${port.transport} side-${port.side} ${snapCandidate?.key===port.key?"snap-target":""} ${isPortConnected(grid,pipeGrid,port)?"connected":""}`} title={`${port.transport==="pipe"?"液体":"固体"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`} aria-label={`${port.transport==="pipe"?"液体":"固体"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`}><span className="port-icon" aria-hidden="true"><i/><b/></span></span>)}{baseCell.root && status === "waiting" && <span className="wait-ring" />}</>}
-                    {transport&&<span className="transport-tooltip"><span>{transport.image?<img src={transport.image} alt=""/>:<i className="empty-item-icon">--</i>}<strong>{transport.kind==="pipe"?"管道":"传送带"} · {transport.name}</strong></span><small>当前流速 {transport.rate}/min · 占用 {transport.cargoCount}/{transport.capacity} 单位</small><small>线路 {routeForCell?.cells.length??0} 格 · 基准运输耗时 {transport.travelSeconds.toFixed(1)}s</small><small>额定吞吐 {transport.kind==="pipe"?PIPE_ITEMS_PER_MINUTE:BELT_ITEMS_PER_MINUTE}/min · {transport.kind==="pipe"?"每格缓存 4 单位":"每格最多 1 件"}</small>{routeForCell&&stalledRouteIds.has(routeForCell.id)&&<small>{transport.targetConnected?"下游库存已满 · 线路满载阻塞":"末端未接输入口 · 线路满载阻塞"}</small>}{transport.connected&&!transport.targetConnected&&!transport.full&&<small>已连接输出口 · 内容将在末端逐格堆积</small>}{!transport.connected&&<small>未连接设备输出口 · 不会生成内容</small>}{secondaryTransport&&<><span className="tooltip-layer"><strong>下层传送带 · {secondaryTransport.name}</strong></span><small>当前流速 {secondaryTransport.rate}/min · 占用 {secondaryTransport.cargoCount}/{secondaryTransport.capacity}</small><small>再次单击可在管道/传送带之间切换选择</small></>}</span>}
+                    {baseCell && !isTransport(baseCell.kind) && <>{baseCell.root && <span style={footprintStyle} className={`cell-glyph root ${!machine ? "compact" : ""} ${baseCell.kind==="powerPole"?"power-pole":""} ${entitySelected?"selected-root":""} ${deviceInventoryFull?"inventory-full":""}`}><b><AssetThumb src={machineImage??tools.find((t) => t.kind === baseCell.kind)?.image} label={tools.find((t) => t.kind === baseCell.kind)?.label??"设备"}/></b>{baseCell.kind==="depot"&&<span className="depot-source">{depotItem?<><AssetThumb src={depotItem.image} label={depotItem.name}/><small>{depotItem.name}</small></>:<small>未选择物品</small>}</span>}{machine && <span className="machine-overlay"><strong className="machine-name">{machine.name}</strong><span className="machine-recipe">{machine.recipe}</span><small className={status}>状态 · {machine.state}</small><small className={`power-state ${machineState?.powered?"powered":"unpowered"}`}>供电 · {machineState?.powered?"正常":"断开"}</small><em>阻塞 · {machine.blocked}</em><span className="machine-progress"><i><b style={{width:`${processProgress}%`}}/></i><em>{processing ? `${processProgress}% · 剩余 ${remainingSeconds}s` : status==="unpowered" ? "等待供电 · --" : status==="starved" ? "缺少输入 · --" : status==="blocked" ? "输出阻塞 · --" : running ? "周期等待 · --" : "未启动 · --"}</em></span></span>}{baseCell.kind==="powerPole"&&<span className="power-pole-label"><strong>供电桩</strong><small>12 × 12</small></span>}</span>}{cellPorts.map((port)=><span key={port.key} className={`port-marker ${port.type} ${port.transport} side-${port.side} ${snapCandidate?.key===port.key?"snap-target":""} ${isPortConnected(grid,pipeGrid,port)?"connected":""}`} title={`${port.transport==="pipe"?"液体":"固体"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`} aria-label={`${port.transport==="pipe"?"液体":"固体"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`}><span className="port-icon" aria-hidden="true"><i/><b/></span></span>)}{baseCell.root && status === "waiting" && <span className="wait-ring" />}</>}
+                    {transport&&<span className="transport-tooltip"><span>{routeForCell?.itemId?<AssetThumb src={transport.image} label={transport.name}/>:<i className="empty-item-icon">--</i>}<strong>{transport.kind==="pipe"?"管道":"传送带"} · {transport.name}</strong></span><small>当前流速 {transport.rate}/min · 占用 {transport.cargoCount}/{transport.capacity} 单位</small><small>线路 {routeForCell?.cells.length??0} 格 · 基准运输耗时 {transport.travelSeconds.toFixed(1)}s</small><small>额定吞吐 {transport.kind==="pipe"?PIPE_ITEMS_PER_MINUTE:BELT_ITEMS_PER_MINUTE}/min · {transport.kind==="pipe"?"每格缓存 4 单位":"每格最多 1 件"}</small>{routeForCell&&stalledRouteIds.has(routeForCell.id)&&<small>{transport.targetConnected?"下游库存已满 · 线路满载阻塞":"末端未接输入口 · 线路满载阻塞"}</small>}{transport.connected&&!transport.targetConnected&&!transport.full&&<small>已连接输出口 · 内容将在末端逐格堆积</small>}{!transport.connected&&<small>未连接设备输出口 · 不会生成内容</small>}{secondaryTransport&&<><span className="tooltip-layer"><strong>下层传送带 · {secondaryTransport.name}</strong></span><small>当前流速 {secondaryTransport.rate}/min · 占用 {secondaryTransport.cargoCount}/{secondaryTransport.capacity}</small><small>再次单击可在管道/传送带之间切换选择</small></>}</span>}
                   </button>;
               })}
             </div>
@@ -1371,13 +1409,13 @@ export default function Home() {
           <div className="panel-heading"><span>生产监控</span><small>LIVE / 02</small></div>
           <div className="metric-grid"><div><small>设备</small><strong>{counts.devices}</strong></div><div><small>物流格</small><strong>{counts.belts}<span> 带</span> / {counts.pipes}<span> 管</span></strong></div><div><small>已供电</small><strong>{productionStates.filter((state)=>state.powered).length}<span> / {productionStates.length}</span></strong></div><div><small>效率</small><strong>{running&&productionStates.length ? Math.round(productionStates.filter((state)=>state.status==="running").length/productionStates.length*100) : "—"}<span>%</span></strong></div></div>
           <div className="section-title"><span>设备状态</span><small>{running ? "SIMULATION ACTIVE" : "SIMULATION PAUSED"}</small></div>
-          {productionStates.map((state,index)=>{const stateText=state.status==="running"?"生产中":state.status==="waiting"?"周期等待":state.status==="starved"?"缺少输入":state.status==="blocked"?"输出阻塞":state.status==="unpowered"?"未供电":"暂停",definition=MACHINE_DEFINITIONS[state.kind],currentRecipe=activeRecipe(definition,state.recipeId);return <div key={state.id} className={`machine-card ${state.status==="running"?"good":state.status!=="idle"?"warn":""}`}><div className="machine-icon"><img src={definition.image} alt=""/></div><div><strong>{definition.name} #{String(index+1).padStart(2,"0")}</strong><small>{modeLabel(currentRecipe.mode)} · {currentRecipe.name} · {stateText} · {state.powered?"供电正常":"供电断开"}</small></div><em>{state.status==="running"?`${state.progress}%`:stateText}</em></div>})}
+          {productionStates.map((state,index)=>{const stateText=state.status==="running"?"生产中":state.status==="waiting"?"周期等待":state.status==="starved"?"缺少输入":state.status==="blocked"?"输出阻塞":state.status==="unpowered"?"未供电":"暂停",definition=MACHINE_DEFINITIONS[state.kind],currentRecipe=activeRecipe(definition,state.recipeId);return <div key={state.id} className={`machine-card ${state.status==="running"?"good":state.status!=="idle"?"warn":""}`}><div className="machine-icon"><AssetThumb src={definition.image} label={definition.name}/></div><div><strong>{definition.name} #{String(index+1).padStart(2,"0")}</strong><small>{modeLabel(currentRecipe.mode)} · {currentRecipe.name} · {stateText} · {state.powered?"供电正常":"供电断开"}</small></div><em>{state.status==="running"?`${state.progress}%`:stateText}</em></div>})}
           <div className="section-title"><span>产销统计</span><small>ROLLING 5 MINUTES</small></div>
           <section className="production-stats" aria-label="产线物品产出量与消耗量统计">
             {involvedStatsItems.length?<>
               <div className="stat-overview"><span className="produced"><i/>产出</span><span className="consumed"><i/>消耗</span><small>30 秒平滑 · 5 秒采样</small></div>
               <div className="stat-list">{involvedStatsItems.map((item)=>{const chart=statsCharts.get(item.id)!;return <article className="stat-item" key={item.id}>
-                <header><span><img src={item.image} alt=""/><strong>{item.name}</strong></span><div className="stat-rates"><b className="produced">产 {Math.round(chart.produced.at(-1)??0)}</b><b className="consumed">耗 {Math.round(chart.consumed.at(-1)??0)}</b><small>/min</small></div></header>
+                <header><span><AssetThumb src={item.image} label={item.name}/><strong>{item.name}</strong></span><div className="stat-rates"><b className="produced">产 {Math.round(chart.produced.at(-1)??0)}</b><b className="consumed">耗 {Math.round(chart.consumed.at(-1)??0)}</b><small>/min</small></div></header>
                 <svg className="stat-chart" viewBox="0 0 240 38" role="img" aria-label={`${item.name}最近五分钟产出与消耗折线图`}><path className="stat-grid-line" d="M 0 1 H 240 M 0 19 H 240 M 0 37 H 240"/><path className="stat-line produced" d={chart.producedPath}/><path className="stat-line consumed" d={chart.consumedPath}/></svg>
                 <footer><span>5 分钟</span><span>产出 <b>{chart.producedTotal}</b></span><span>消耗 <b>{chart.consumedTotal}</b></span></footer>
               </article>})}</div>

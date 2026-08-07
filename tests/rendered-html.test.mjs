@@ -29,7 +29,10 @@ test("server-renders the belt-first blueprint planner", async () => {
   assert.match(html, /配件机/);
   assert.match(html, /塑形机/);
   assert.match(html, /灌装机/);
+  assert.match(html, /拆解机/);
   assert.match(html, /反应池/);
+  assert.match(html, /提纯机/);
+  assert.match(html, /待补图/);
   assert.match(html, /水泵/);
   assert.match(html, /游戏设备分类/);
   assert.match(html, /仓储存取/);
@@ -170,7 +173,14 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(page, /logisticsBridge/);
   assert.match(page, /molder:\{name:"塑形机"[\s\S]*?recipe\("ferrium-bottle"[\s\S]*?,2\)/);
   assert.match(page, /filler:\{name:"灌装机"[\s\S]*?recipe\("water-bottled"[\s\S]*?,2\)/);
+  assert.match(page, /filler:\{name:"灌装机"[\s\S]*?recipe\("amethyst-jincao-bottled"[\s\S]*?,2\)/);
+  assert.match(page, /dismantler:\{name:"拆解机",width:4,height:6,powerUsage:20[\s\S]*?recipe\("dismantle-amethyst-water"[\s\S]*?,2\)/);
   assert.match(page, /reactor:\{name:"反应池"[\s\S]*?recipe\("liquid-xiranite"[\s\S]*?,2\)/);
+  assert.match(page, /reactor:\{name:"反应池"[\s\S]*?recipe\("xircon-effluents"[\s\S]*?,2\)/);
+  assert.match(page, /purifier:\{name:"提纯机",width:5,height:5,powerUsage:50[\s\S]*?recipe\("purify-cuprium-solution"[\s\S]*?,2\)/);
+  assert.match(page, /purifier:\{width:5,height:5[\s\S]*?outputIndex:1[\s\S]*?outputIndex:0/);
+  assert.match(page, /outputIndex:spec\.outputIndex/);
+  assert.match(page, /const indexedOutput=sourcePort\?\.outputIndex==null\?undefined:sourceRecipe\?\.outputs\[sourcePort\.outputIndex\]/);
   assert.match(page, /waterPump:\{name:"水泵"[\s\S]*?recipe\("clean-water"[\s\S]*?,1\)/);
   assert.match(page, /waterPump:\{width:2,height:2,inputs:\[\],outputs:\[\{x:1,y:1,side:0,transport:"pipe"\}\]\}/);
   assert.match(page, /SOLID_INPUT_CAPACITY=50/);
@@ -217,7 +227,10 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(page, /seedPicker:\{name:"采种机"[\s\S]*?recipe\("buck-seed"/);
   assert.match(page, /planter:\{name:"种植机"[\s\S]*?recipe\("jincao-fluid"/);
   assert.match(page, /forge:\{name:"天有洪炉"[\s\S]*?recipe\("xiranite"/);
-  assert.match(page, /className="machine-icon"><img src=\{definition\.image\}/);
+  assert.match(page, /function AssetThumb/);
+  assert.match(page, /className="machine-icon"><AssetThumb src=\{definition\.image\} label=\{definition\.name\}/);
+  assert.match(page, /aria-label=\{`\$\{label\}图像待补`\}/);
+  assert.match(page, /className="flow-placeholder"/);
   assert.match(page, /gearAssembler:\{name:"装备原件机"[\s\S]*?image:"\/assets\/machines\/gear-assembler\.webp"/);
   assert.match(page, /molder:\{name:"塑形机"[\s\S]*?image:"\/assets\/machines\/molder\.webp"/);
   assert.match(page, /id:"purple-equipment-component"[\s\S]*?image:"\/assets\/items\/purple-equipment-component\.webp"/);
@@ -246,6 +259,8 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(css, /\.stat-item\{/);
   assert.match(css, /\.stat-chart\{[^}]*height:32px/);
   assert.match(css, /\.machine-card \.machine-icon img/);
+  assert.match(css, /\.content-placeholder\{/);
+  assert.match(css, /\.flow-placeholder\{/);
   assert.doesNotMatch(css, /data-theme="dark"/);
   assert.match(timing, /BELT_ITEMS_PER_MINUTE = 30/);
   assert.match(timing, /PIPE_ITEMS_PER_MINUTE = 120/);
