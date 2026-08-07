@@ -3,19 +3,19 @@
 import { useEffect, useMemo, useState } from "react";
 
 type Kind = "belt" | "pipe" | "refiner" | "fitter" | "tank" | "depot";
-type Cell = { kind: Kind; rotation: number; id: string; root?: boolean };
+type Cell = { kind: Kind; rotation: number; id: string; root?: boolean; partX?: number; partY?: number; size?: number };
 type Grid = Record<string, Cell>;
 
 const DEFAULT_COLS = 18;
 const DEFAULT_ROWS = 12;
 const keyOf = (x: number, y: number) => `${x},${y}`;
 
-const tools: { kind: Kind; label: string; group: string; glyph: string; desc: string }[] = [
+const tools: { kind: Kind; label: string; group: string; glyph: string; desc: string; image?: string }[] = [
   { kind: "belt", label: "传送带", group: "物流", glyph: "→", desc: "固体 · 60/min" },
   { kind: "pipe", label: "管道", group: "物流", glyph: "≈", desc: "流体 · 90/min" },
   { kind: "depot", label: "仓库取货口", group: "物流", glyph: "D", desc: "指定物品输出" },
-  { kind: "refiner", label: "精炼炉", group: "生产", glyph: "R", desc: "矿石 → 金属块" },
-  { kind: "fitter", label: "配件机", group: "生产", glyph: "F", desc: "金属块 → 零件" },
+  { kind: "refiner", label: "精炼炉", group: "生产", glyph: "R", desc: "矿石 → 金属块", image:"/assets/machines/refinery.webp" },
+  { kind: "fitter", label: "配件机", group: "生产", glyph: "F", desc: "金属块 → 零件", image:"/assets/machines/assembler.webp" },
   { kind: "tank", label: "储液罐", group: "储存", glyph: "T", desc: "容量 600" },
 ];
 
@@ -38,7 +38,7 @@ const initial = (() => {
   const next = { ...baseInitial };
   const seed = (kind: "refiner" | "fitter", sx: number, sy: number, id: string) => {
     for (let dy = 0; dy < 3; dy++) for (let dx = 0; dx < 3; dx++)
-      next[keyOf(sx + dx, sy + dy)] = { kind, rotation: 0, id, root: dx === 1 && dy === 1 };
+      next[keyOf(sx + dx, sy + dy)] = { kind, rotation: 0, id, root: dx === 1 && dy === 1, partX:dx, partY:dy, size:3 };
   };
   seed("refiner", 5, 2, "d"); seed("fitter", 9, 2, "g");
   return next;
@@ -93,7 +93,7 @@ export default function Home() {
       const cells = Array.from({ length: size * size }, (_, i) => keyOf(x + i % size, y + Math.floor(i / size)));
       if (cells.some((k) => old[k])) { setNotice("设备占地与现有设施冲突"); return old; }
       const id = crypto.randomUUID(); const next = { ...old };
-      cells.forEach((k, i) => next[k] = { kind: selected, rotation: 0, id, root: size === 1 || i === 4 });
+      cells.forEach((k, i) => next[k] = { kind: selected, rotation: 0, id, root: size === 1 || i === 4, partX:i%size, partY:Math.floor(i/size), size });
       return next;
     });
   }
@@ -129,7 +129,7 @@ export default function Home() {
               <p>{group}</p>
               {tools.filter((t) => t.group === group).map((tool) => (
                 <button key={tool.kind} className={`tool ${selected === tool.kind ? "active" : ""}`} onClick={() => setSelected(tool.kind)}>
-                  <span className={`tool-glyph ${tool.kind}`}>{tool.glyph}</span>
+                  <span className={`tool-glyph ${tool.kind}`}>{tool.image ? <img src={tool.image} alt=""/> : tool.glyph}</span>
                   <span><strong>{tool.label}</strong><small>{tool.desc}</small></span>
                 </button>
               ))}
@@ -161,13 +161,18 @@ export default function Home() {
               {Array.from({ length: cols * rows }).map((_, index) => {
                 const x = index % cols; const y = Math.floor(index / cols); const cell = grid[keyOf(x, y)];
                 const status = cell ? cellStatus(cell, running) : "";
-                const mask = cell && isTransport(cell.kind) ? [y > 0 && grid[keyOf(x,y-1)]?.kind === cell.kind ? "n":"", x < cols-1 && grid[keyOf(x+1,y)]?.kind === cell.kind ? "e":"", y < rows-1 && grid[keyOf(x,y+1)]?.kind === cell.kind ? "s":"", x > 0 && grid[keyOf(x-1,y)]?.kind === cell.kind ? "w":""].join("") : "";
+                const north=grid[keyOf(x,y-1)], east=grid[keyOf(x+1,y)], south=grid[keyOf(x,y+1)], west=grid[keyOf(x-1,y)];
+                const mask = cell && isTransport(cell.kind) ? [y > 0 && north?.kind === cell.kind ? "n":"", x < cols-1 && (east?.kind === cell.kind || (cell.kind==="belt" && east && !isTransport(east.kind) && east.partX===0)) ? "e":"", y < rows-1 && south?.kind === cell.kind ? "s":"", x > 0 && (west?.kind === cell.kind || (cell.kind==="belt" && west && !isTransport(west.kind) && west.partX===(west.size??1)-1)) ? "w":""].join("") : "";
                 const machine = cell?.kind === "refiner" ? { recipe:"蓝铁矿 ×1 → 蓝铁块 ×1", state:running ? "生产中" : "已暂停", blocked:"否" } : cell?.kind === "fitter" ? { recipe:"蓝铁块 ×1 → 铁制零件 ×1", state:running ? "缺料等待" : "已暂停", blocked:"否" } : null;
+                const machineImage = cell?.kind === "refiner" ? "/assets/machines/refinery.webp" : cell?.kind === "fitter" ? "/assets/machines/assembler.webp" : null;
+                const inputPort = machine && cell?.partX === 0;
+                const outputPort = machine && cell?.partX === (cell?.size ?? 1)-1;
+                const cargoImage = cell?.kind === "pipe" ? "/assets/items/liquid-xiranite.webp" : x < 8 ? "/assets/items/blue-iron-ore.webp" : "/assets/items/blue-iron-block.webp";
                 return <button key={index} className={`cell ${cell ? `placed ${cell.kind}` : ""} ${status}`} aria-label={`${x},${y}${cell ? ` ${cell.kind}` : ""}`}
                   onMouseDown={(e) => { if(e.button===1||e.altKey)return; setDrawing(true); paint(x, y); }} onMouseEnter={() => drawing && paint(x, y)} onMouseUp={() => setDrawing(false)}
                   onContextMenu={(e) => { e.preventDefault(); setGrid((old) => { const target=old[keyOf(x,y)]; if(!target)return old; const next={...old}; Object.keys(next).forEach(k=>{if(next[k].id===target.id)delete next[k]}); return next; }); }}>
-                    {cell && isTransport(cell.kind) && <span className="transport-track" data-mask={mask || "e"}><i className="seg n"/><i className="seg e"/><i className="seg s"/><i className="seg w"/>{running && (x+y)%2===0 && <b className={`item-icon ${cell.kind === "pipe" ? "fluid" : "solid"}`}>{cell.kind === "pipe" ? "●" : "◆"}</b>}</span>}
-                    {cell && !isTransport(cell.kind) && <><span className={`cell-glyph ${cell.root ? "root" : "part"}`}>{cell.root && <><b>{tools.find((t) => t.kind === cell.kind)?.glyph}</b>{machine && <span className="machine-overlay"><strong>{machine.recipe}</strong><small className={status}>● {machine.state}</small><em>阻塞：{machine.blocked}</em></span>}</>}</span>{cell.root && status === "waiting" && <span className="wait-ring" />}</>}
+                    {cell && isTransport(cell.kind) && <span className="transport-track" data-mask={mask || "e"}><i className="seg n"/><i className="seg e"/><i className="seg s"/><i className="seg w"/><span className="junction-core"/>{running && (x+y)%2===0 && <b className={`item-icon ${cell.kind === "pipe" ? "fluid" : "solid"}`} title={cell.kind === "pipe" ? "液化息壤" : x < 8 ? "蓝铁矿" : "蓝铁块"}><img src={cargoImage} alt={cell.kind === "pipe" ? "液化息壤" : x < 8 ? "蓝铁矿" : "蓝铁块"}/></b>}</span>}
+                    {cell && !isTransport(cell.kind) && <><span className={`cell-glyph ${cell.root ? `root ${cell.size === 1 || cell.size == null ? "compact" : ""}` : "part"}`}>{cell.root && <><b>{machineImage ? <img src={machineImage} alt={tools.find((t) => t.kind === cell.kind)?.label}/> : tools.find((t) => t.kind === cell.kind)?.glyph}</b>{machine && <span className="machine-overlay"><strong>{machine.recipe}</strong><small className={status}>● {machine.state}</small><em>阻塞：{machine.blocked}</em></span>}</>}</span>{inputPort && <span className="port-marker input" title="物品输入口"><i>IN</i><b>›</b></span>}{outputPort && <span className="port-marker output" title="物品输出口"><b>›</b><i>OUT</i></span>}{cell.root && status === "waiting" && <span className="wait-ring" />}</>}
                   </button>;
               })}
             </div>
