@@ -6,12 +6,13 @@ import { BELT_HEADWAY_TICKS, BELT_ITEMS_PER_MINUTE, PIPE_HEADWAY_TICKS, PIPE_ITE
 import { RADIAL_CONFIRM_DELAY_MS, RADIAL_HOLD_DELAY_MS, RADIAL_PREOPEN_TOLERANCE_PX, RadialAction, radialSelection } from "../lib/radial-menu";
 
 type TransportKind = "belt" | "pipe";
-type Kind = TransportKind | "refiner" | "fitter" | "molder" | "filler" | "reactor" | "gearAssembler" | "waterPump" | "splitter" | "merger" | "logisticsBridge" | "pipeSplitter" | "pipeMerger" | "pipeBridge" | "storagePort" | "tank" | "depot" | "powerPole";
-type ProductionKind = "refiner" | "fitter" | "molder" | "filler" | "reactor" | "gearAssembler" | "waterPump";
+type Kind = TransportKind | "refiner" | "crusher" | "fitter" | "molder" | "filler" | "sealer" | "grinder" | "seedPicker" | "planter" | "reactor" | "forge" | "gearAssembler" | "waterPump" | "splitter" | "merger" | "logisticsBridge" | "pipeSplitter" | "pipeMerger" | "pipeBridge" | "storagePort" | "tank" | "depot" | "powerPole";
+type ProductionKind = "refiner" | "crusher" | "fitter" | "molder" | "filler" | "sealer" | "grinder" | "seedPicker" | "planter" | "reactor" | "forge" | "gearAssembler" | "waterPump";
+type MachineMode = "solid" | "fluid";
 type DeviceCategory = "全部" | "资源开采" | "仓储存取" | "基础生产" | "合成制造" | "电力供应" | "功能设备" | "战斗辅助" | "种植调配";
 type Direction = 0 | 1 | 2 | 3;
 type PipeContent = "clean-water" | "liquid-xiranite" | "sewage";
-type Cell = { kind: Kind; rotation: Direction; entry?: Direction; id: string; root?: boolean; partX?: number; partY?: number; size?: number; width?: number; height?: number; content?: PipeContent; itemId?: string };
+type Cell = { kind: Kind; rotation: Direction; entry?: Direction; id: string; root?: boolean; partX?: number; partY?: number; size?: number; width?: number; height?: number; content?: PipeContent; itemId?: string; recipeId?:string };
 type Grid = Record<string, Cell>;
 
 const DEFAULT_COLS = 18;
@@ -29,11 +30,11 @@ const directionBetween = (fromX: number, fromY: number, toX: number, toY: number
 
 type FlowRoute = { id: string; kind: TransportKind; cells: { x:number; y:number; cell:Cell }[]; path: string };
 type PickedEntity = { id:string; mode:"move" | "copy"; sourceType:"entity"|"route"; sourceKeys:string[]; cells:{ dx:number; dy:number; cell:Cell }[]; label:string; image?:string };
-type MachineState = { id:string; kind:ProductionKind; status:"idle"|"running"|"waiting"|"starved"|"blocked"|"unpowered"; progress:number; remaining:string; hasInput:boolean; hasOutput:boolean; powered:boolean; inventoryFull:boolean };
+type MachineState = { id:string; kind:ProductionKind; recipeId:string; status:"idle"|"running"|"waiting"|"starved"|"blocked"|"unpowered"; progress:number; remaining:string; hasInput:boolean; hasOutput:boolean; powered:boolean; inventoryFull:boolean };
 type PowerZone = { id:string; x:number; y:number; size:number };
 type Point = { x:number; y:number };
 type PortType = "input" | "output";
-type PortSpec = { x:number; y:number; side:Direction; transport?:TransportKind };
+type PortSpec = { x:number; y:number; side:Direction; transport?:TransportKind; modes?:MachineMode[] };
 type EquipmentLayout = { width:number; height:number; inputs:PortSpec[]; outputs:PortSpec[] };
 type ResolvedPort = { key:string; entityId:string; entityKind:Kind; type:PortType; index:number; side:Direction; transport:TransportKind; cellX:number; cellY:number; externalX:number; externalY:number };
 type BeltReplan = { routeId:string; replaceKeys:string[]; anchorEntry?:Direction };
@@ -44,7 +45,9 @@ type RadialGesture = { entityId:string; pointerId:number; startX:number; startY:
 type ConnectedFlowRoute = FlowRoute & { sourcePort?:ResolvedPort; targetPort?:ResolvedPort; sourceConnected:boolean; targetConnected:boolean; valid:boolean; itemId?:string; itemName:string; itemImage:string };
 type IndustrialItem = { id:string; name:string; category:"矿物"|"工业产物"|"流体"; image:string; color?:string };
 type DeviceInventory = { input:Record<string,number>; output:Record<string,number> };
-type MachineDefinition = { name:string; recipe:string; width:number; height:number; image:string; inputs:{itemId:string;amount:number}[]; output:{itemId:string;amount:number}; durationTicks:number };
+type RecipeQuantity = {itemId:string;amount:number};
+type MachineRecipe = {id:string;name:string;mode:MachineMode;inputs:RecipeQuantity[];outputs:RecipeQuantity[];durationTicks:number};
+type MachineDefinition = { name:string; width:number; height:number; image:string; powerUsage:number; recipes:MachineRecipe[] };
 type TransitItem = { id:string; routeId:string; itemId:string; position:number; previousPosition:number };
 type ItemStatSample = { second:number; produced:Record<string,number>; consumed:Record<string,number> };
 type ItemStatsChart = { produced:number[]; consumed:number[]; producedPath:string; consumedPath:string; producedTotal:number; consumedTotal:number };
@@ -61,51 +64,133 @@ const totalInventory=(bucket:Record<string,number>)=>Object.values(bucket).reduc
 const inputCapacityFor=(kind:Kind|undefined,transport:TransportKind)=>kind==="storagePort"?240:["splitter","merger","logisticsBridge","pipeSplitter","pipeMerger","pipeBridge"].includes(kind??"")?30:transport==="pipe"?FLUID_INPUT_CAPACITY:SOLID_INPUT_CAPACITY;
 const secondsToTicks=(seconds:number)=>Math.round(seconds*SIM_TICKS_PER_SECOND);
 const addQuantity=(bucket:Record<string,number>,itemId:string,amount:number)=>{bucket[itemId]=(bucket[itemId]??0)+amount};
+const modeLabel=(mode:MachineMode)=>mode==="fluid"?"液体模式":"固体模式";
 const chartPath=(values:number[],maximum:number,width=240,height=82)=>values.map((value,index)=>`${index?"L":"M"} ${(index/Math.max(1,values.length-1)*width).toFixed(2)} ${(height-value/Math.max(1,maximum)*height).toFixed(2)}`).join(" ");
 const emptySimulationState=():SimulationState=>({tick:0,inventories:{},processes:{},transits:[],routeCursor:{},laneReadyAt:{},routeTransfers:{},itemStats:[]});
 
 const INDUSTRIAL_ITEMS:IndustrialItem[] = [
   {id:"blue-iron-ore",name:"蓝铁矿",category:"矿物",image:"/assets/items/blue-iron-ore.webp"},
   {id:"purple-crystal-ore",name:"紫晶矿",category:"矿物",image:"/assets/items/purple-crystal-ore.webp"},
+  {id:"source-ore",name:"源矿",category:"矿物",image:"/assets/items/source-ore.webp"},
   {id:"red-copper-ore",name:"赤铜矿",category:"矿物",image:"/assets/items/red-copper-ore.svg"},
   {id:"blue-iron-block",name:"蓝铁块",category:"工业产物",image:"/assets/items/blue-iron-block.webp"},
+  {id:"red-copper-block",name:"赤铜块",category:"工业产物",image:"/assets/items/red-copper-block-generated.webp"},
   {id:"iron-parts",name:"铁制零件",category:"工业产物",image:"/assets/items/iron-parts.webp"},
   {id:"blue-iron-powder",name:"蓝铁粉末",category:"工业产物",image:"/assets/items/blue-iron-powder.webp"},
+  {id:"dense-blue-iron-powder",name:"致密蓝铁粉末",category:"工业产物",image:"/assets/items/dense-blue-iron-powder.webp"},
+  {id:"source-powder",name:"源石粉末",category:"工业产物",image:"/assets/items/source-powder.webp"},
+  {id:"dense-source-powder",name:"致密源石粉末",category:"工业产物",image:"/assets/items/dense-source-powder.webp"},
   {id:"purple-crystal-fiber",name:"紫晶纤维",category:"工业产物",image:"/assets/items/purple-crystal-fiber.webp"},
+  {id:"purple-crystal-powder",name:"紫晶粉末",category:"工业产物",image:"/assets/items/purple-crystal-powder.webp"},
   {id:"purple-crystal-parts",name:"紫晶零件",category:"工业产物",image:"/assets/items/purple-crystal-parts.webp"},
   {id:"steel-block",name:"钢块",category:"工业产物",image:"/assets/items/steel-block.webp"},
   {id:"crystal-shell",name:"晶体外壳",category:"工业产物",image:"/assets/items/crystal-shell.webp"},
   {id:"purple-equipment-component",name:"紫晶装备原件",category:"工业产物",image:"/assets/items/purple-equipment-component.webp"},
   {id:"blue-iron-bottle",name:"蓝铁瓶",category:"工业产物",image:"/assets/items/blue-iron-bottle.webp"},
+  {id:"purple-crystal-bottle",name:"紫晶质瓶",category:"工业产物",image:"/assets/items/purple-crystal-bottle.webp"},
   {id:"water-filled-blue-iron-bottle",name:"蓝铁瓶（清水）",category:"工业产物",image:"/assets/items/water-filled-blue-iron-bottle.webp"},
+  {id:"qiao-flower",name:"荞花",category:"工业产物",image:"/assets/items/qiao-flower.webp"},
+  {id:"qiao-flower-powder",name:"荞花粉末",category:"工业产物",image:"/assets/items/qiao-flower-powder.webp"},
+  {id:"qiao-flower-seed",name:"荞花种子",category:"工业产物",image:"/assets/items/qiao-flower-seed.webp"},
+  {id:"qiao-capsule",name:"荞愈胶囊",category:"工业产物",image:"/assets/items/qiao-capsule-generated.webp"},
+  {id:"sand-leaf",name:"砂叶",category:"工业产物",image:"/assets/items/sand-leaf.webp"},
+  {id:"sand-leaf-powder",name:"砂叶粉末",category:"工业产物",image:"/assets/items/sand-leaf-powder.webp"},
+  {id:"sand-leaf-seed",name:"砂叶种子",category:"工业产物",image:"/assets/items/sand-leaf-seed.webp"},
+  {id:"jincao",name:"锦草",category:"工业产物",image:"/assets/items/jincao.webp"},
+  {id:"jincao-powder",name:"锦草粉末",category:"工业产物",image:"/assets/items/jincao-powder.webp"},
+  {id:"jincao-seed",name:"锦草种子",category:"工业产物",image:"/assets/items/jincao-seed.webp"},
+  {id:"ketonized-shrub-powder",name:"酮化灌木粉末",category:"工业产物",image:"/assets/items/ketonized-shrub-powder.webp"},
+  {id:"stable-carbon",name:"稳定碳块",category:"工业产物",image:"/assets/items/stable-carbon.webp"},
+  {id:"low-capacity-valley-battery",name:"低容谷地电池",category:"工业产物",image:"/assets/items/low-capacity-valley-battery.webp"},
+  {id:"industrial-explosive",name:"工业爆炸物",category:"工业产物",image:"/assets/items/industrial-explosive.webp"},
   {id:"xiranite",name:"息壤",category:"工业产物",image:"/assets/items/xiranite.webp"},
   {id:"clean-water",name:"清水",category:"流体",image:"/assets/items/clean-water.svg",color:"#a9dbea"},
+  {id:"sewage",name:"污水",category:"流体",image:"/assets/items/sewage.svg",color:"#b7c9aa"},
+  {id:"jincao-solution",name:"锦草溶液",category:"流体",image:"/assets/items/jincao-solution.webp",color:"#c9e0cf"},
   {id:"liquid-xiranite",name:"液化息壤",category:"流体",image:"/assets/items/liquid-xiranite.webp",color:"#b8dfcf"},
 ];
 
 const itemTransport=(itemId:string):TransportKind=>INDUSTRIAL_ITEMS.find((item)=>item.id===itemId)?.category==="流体"?"pipe":"belt";
 const inputTotalFor=(bucket:Record<string,number>,transport:TransportKind)=>Object.entries(bucket).reduce((sum,[itemId,quantity])=>sum+(itemTransport(itemId)===transport?quantity:0),0);
 
+const recipe=(id:string,name:string,mode:MachineMode,inputs:RecipeQuantity[],outputs:RecipeQuantity[],seconds:number):MachineRecipe=>({id,name,mode,inputs,outputs,durationTicks:secondsToTicks(seconds)});
 const MACHINE_DEFINITIONS:Record<ProductionKind,MachineDefinition> = {
-  refiner:{name:"精炼炉",recipe:"蓝铁矿 ×1 → 蓝铁块 ×1",width:3,height:3,image:"/assets/machines/refinery.webp",inputs:[{itemId:"blue-iron-ore",amount:1}],output:{itemId:"blue-iron-block",amount:1},durationTicks:secondsToTicks(2)},
-  fitter:{name:"配件机",recipe:"蓝铁块 ×1 → 铁制零件 ×1",width:3,height:3,image:"/assets/machines/assembler.webp",inputs:[{itemId:"blue-iron-block",amount:1}],output:{itemId:"iron-parts",amount:1},durationTicks:secondsToTicks(2)},
-  molder:{name:"塑形机",recipe:"蓝铁块 ×2 → 蓝铁瓶 ×1",width:3,height:3,image:"/assets/machines/molder.webp",inputs:[{itemId:"blue-iron-block",amount:2}],output:{itemId:"blue-iron-bottle",amount:1},durationTicks:secondsToTicks(2)},
-  filler:{name:"灌装机",recipe:"蓝铁瓶 ×1 + 清水 ×1 → 蓝铁瓶（清水） ×1",width:4,height:6,image:"/assets/machines/filler.webp",inputs:[{itemId:"blue-iron-bottle",amount:1},{itemId:"clean-water",amount:1}],output:{itemId:"water-filled-blue-iron-bottle",amount:1},durationTicks:secondsToTicks(2)},
-  reactor:{name:"反应池",recipe:"息壤 ×1 + 清水 ×1 → 液化息壤 ×1",width:5,height:5,image:"/assets/machines/reactor.webp",inputs:[{itemId:"xiranite",amount:1},{itemId:"clean-water",amount:1}],output:{itemId:"liquid-xiranite",amount:1},durationTicks:secondsToTicks(2)},
-  gearAssembler:{name:"装备原件机",recipe:"晶体外壳 ×5 + 紫晶纤维 ×5 → 紫晶装备原件 ×1",width:4,height:6,image:"/assets/machines/gear-assembler.webp",inputs:[{itemId:"crystal-shell",amount:5},{itemId:"purple-crystal-fiber",amount:5}],output:{itemId:"purple-equipment-component",amount:1},durationTicks:secondsToTicks(10)},
-  waterPump:{name:"水泵",recipe:"水源 → 清水 ×1",width:2,height:2,image:"/assets/machines/water-pump.svg",inputs:[],output:{itemId:"clean-water",amount:1},durationTicks:secondsToTicks(1)},
+  refiner:{name:"精炼炉",width:3,height:3,image:"/assets/machines/refinery.webp",powerUsage:5,recipes:[
+    recipe("ferrium-block","蓝铁块","solid",[{itemId:"blue-iron-ore",amount:1}],[{itemId:"blue-iron-block",amount:1}],2),
+    recipe("amethyst-fiber","紫晶纤维","solid",[{itemId:"purple-crystal-ore",amount:1}],[{itemId:"purple-crystal-fiber",amount:1}],2),
+    recipe("origocrust","晶体外壳","solid",[{itemId:"source-ore",amount:1}],[{itemId:"crystal-shell",amount:1}],2),
+    recipe("cuprium-fluid","赤铜块与污水","fluid",[{itemId:"red-copper-ore",amount:1},{itemId:"clean-water",amount:1}],[{itemId:"red-copper-block",amount:1},{itemId:"sewage",amount:1}],2),
+  ]},
+  crusher:{name:"粉碎机",width:3,height:3,image:"/assets/machines/crusher.webp",powerUsage:5,recipes:[
+    recipe("originium-powder","源石粉末","solid",[{itemId:"source-ore",amount:1}],[{itemId:"source-powder",amount:1}],2),
+    recipe("ferrium-powder","蓝铁粉末","solid",[{itemId:"blue-iron-block",amount:1}],[{itemId:"blue-iron-powder",amount:1}],2),
+    recipe("amethyst-powder","紫晶粉末","solid",[{itemId:"purple-crystal-fiber",amount:1}],[{itemId:"purple-crystal-powder",amount:1}],2),
+    recipe("buck-powder","荞花粉末","solid",[{itemId:"qiao-flower",amount:1}],[{itemId:"qiao-flower-powder",amount:1}],2),
+  ]},
+  fitter:{name:"配件机",width:3,height:3,image:"/assets/machines/assembler.webp",powerUsage:20,recipes:[
+    recipe("ferrium-part","铁制零件","solid",[{itemId:"blue-iron-block",amount:1}],[{itemId:"iron-parts",amount:1}],2),
+    recipe("amethyst-part","紫晶零件","solid",[{itemId:"purple-crystal-fiber",amount:1}],[{itemId:"purple-crystal-parts",amount:1}],2),
+  ]},
+  molder:{name:"塑形机",width:3,height:3,image:"/assets/machines/molder.webp",powerUsage:20,recipes:[
+    recipe("ferrium-bottle","蓝铁瓶","solid",[{itemId:"blue-iron-block",amount:1}],[{itemId:"blue-iron-bottle",amount:1}],2),
+    recipe("amethyst-bottle","紫晶质瓶","solid",[{itemId:"purple-crystal-fiber",amount:1}],[{itemId:"purple-crystal-bottle",amount:1}],2),
+  ]},
+  filler:{name:"灌装机",width:4,height:6,image:"/assets/machines/filler.webp",powerUsage:20,recipes:[
+    recipe("buck-capsule","荞愈胶囊","solid",[{itemId:"purple-crystal-bottle",amount:5},{itemId:"qiao-flower-powder",amount:5}],[{itemId:"qiao-capsule",amount:1}],10),
+    recipe("water-bottled","蓝铁瓶（清水）","fluid",[{itemId:"blue-iron-bottle",amount:1},{itemId:"clean-water",amount:1}],[{itemId:"water-filled-blue-iron-bottle",amount:1}],2),
+  ]},
+  sealer:{name:"封装机",width:4,height:6,image:"/assets/machines/sealer.webp",powerUsage:20,recipes:[
+    recipe("lc-valley-battery","低容谷地电池","solid",[{itemId:"purple-crystal-parts",amount:5},{itemId:"source-powder",amount:10}],[{itemId:"low-capacity-valley-battery",amount:1}],10),
+    recipe("industrial-explosive","工业爆炸物","solid",[{itemId:"purple-crystal-parts",amount:5},{itemId:"ketonized-shrub-powder",amount:5}],[{itemId:"industrial-explosive",amount:1}],10),
+  ]},
+  grinder:{name:"研磨机",width:4,height:6,image:"/assets/machines/grinder.webp",powerUsage:20,recipes:[
+    recipe("dense-ferrium-powder","致密蓝铁粉末","solid",[{itemId:"blue-iron-powder",amount:2},{itemId:"sand-leaf-powder",amount:1}],[{itemId:"dense-blue-iron-powder",amount:1}],2),
+    recipe("dense-originium-powder","致密源石粉末","solid",[{itemId:"source-powder",amount:2},{itemId:"sand-leaf-powder",amount:1}],[{itemId:"dense-source-powder",amount:1}],2),
+  ]},
+  seedPicker:{name:"采种机",width:5,height:5,image:"/assets/machines/seed-picker.webp",powerUsage:10,recipes:[
+    recipe("buck-seed","荞花种子","solid",[{itemId:"qiao-flower",amount:1}],[{itemId:"qiao-flower-seed",amount:2}],2),
+    recipe("sandleaf-seed","砂叶种子","solid",[{itemId:"sand-leaf",amount:1}],[{itemId:"sand-leaf-seed",amount:2}],2),
+  ]},
+  planter:{name:"种植机",width:5,height:5,image:"/assets/machines/planter.webp",powerUsage:20,recipes:[
+    recipe("buckflower","荞花","solid",[{itemId:"qiao-flower-seed",amount:1}],[{itemId:"qiao-flower",amount:1}],2),
+    recipe("sandleaf","砂叶","solid",[{itemId:"sand-leaf-seed",amount:1}],[{itemId:"sand-leaf",amount:1}],2),
+    recipe("jincao-fluid","锦草","fluid",[{itemId:"jincao-seed",amount:1},{itemId:"clean-water",amount:1}],[{itemId:"jincao",amount:2}],2),
+  ]},
+  reactor:{name:"反应池",width:5,height:5,image:"/assets/machines/reactor.webp",powerUsage:20,recipes:[
+    recipe("liquid-xiranite","液化息壤","fluid",[{itemId:"xiranite",amount:1},{itemId:"clean-water",amount:1}],[{itemId:"liquid-xiranite",amount:1}],2),
+    recipe("jincao-solution","锦草溶液","fluid",[{itemId:"jincao-powder",amount:1},{itemId:"clean-water",amount:1}],[{itemId:"jincao-solution",amount:1}],2),
+  ]},
+  forge:{name:"天有洪炉",width:5,height:5,image:"/assets/machines/forge-of-the-sky.webp",powerUsage:50,recipes:[
+    recipe("xiranite","息壤","fluid",[{itemId:"stable-carbon",amount:2},{itemId:"clean-water",amount:1}],[{itemId:"xiranite",amount:1}],2),
+  ]},
+  gearAssembler:{name:"装备原件机",width:4,height:6,image:"/assets/machines/gear-assembler.webp",powerUsage:10,recipes:[
+    recipe("amethyst-component","紫晶装备原件","solid",[{itemId:"crystal-shell",amount:5},{itemId:"purple-crystal-fiber",amount:5}],[{itemId:"purple-equipment-component",amount:1}],10),
+  ]},
+  waterPump:{name:"水泵",width:2,height:2,image:"/assets/machines/water-pump.svg",powerUsage:5,recipes:[
+    recipe("clean-water","清水","fluid",[],[{itemId:"clean-water",amount:1}],1),
+  ]},
 };
+
+const activeRecipe=(definition:MachineDefinition,recipeId?:string)=>definition.recipes.find((candidate)=>candidate.id===recipeId)??definition.recipes[0];
+const itemName=(itemId:string)=>INDUSTRIAL_ITEMS.find((item)=>item.id===itemId)?.name??itemId;
+const recipeText=(current:MachineRecipe)=>`${current.inputs.length?current.inputs.map((input)=>`${itemName(input.itemId)} ×${input.amount}`).join(" + "):"环境输入"} → ${current.outputs.map((output)=>`${itemName(output.itemId)} ×${output.amount}`).join(" + ")}`;
 
 const edgePorts=(height:number,side:Direction,x:number):PortSpec[]=>Array.from({length:height},(_,y)=>({x,y,side}));
 
 const EQUIPMENT_LAYOUTS: Partial<Record<Kind,EquipmentLayout>> = {
   depot:{width:1,height:3,inputs:[],outputs:[{x:0,y:1,side:0}]},
   storagePort:{width:1,height:3,inputs:[{x:0,y:1,side:2}],outputs:[]},
-  refiner:{width:3,height:3,inputs:edgePorts(3,2,0),outputs:edgePorts(3,0,2)},
+  refiner:{width:3,height:3,inputs:[...edgePorts(3,2,0),{x:1,y:2,side:1,transport:"pipe",modes:["fluid"]}],outputs:[...edgePorts(3,0,2),{x:1,y:0,side:3,transport:"pipe",modes:["fluid"]}]},
+  crusher:{width:3,height:3,inputs:edgePorts(3,2,0),outputs:edgePorts(3,0,2)},
   fitter:{width:3,height:3,inputs:edgePorts(3,2,0),outputs:edgePorts(3,0,2)},
   molder:{width:3,height:3,inputs:edgePorts(3,2,0),outputs:edgePorts(3,0,2)},
-  filler:{width:4,height:6,inputs:[...edgePorts(6,2,0),{x:1,y:5,side:1,transport:"pipe"}],outputs:edgePorts(6,0,3)},
+  filler:{width:4,height:6,inputs:[...edgePorts(6,2,0),{x:1,y:5,side:1,transport:"pipe",modes:["fluid"]}],outputs:edgePorts(6,0,3)},
+  sealer:{width:4,height:6,inputs:edgePorts(6,2,0),outputs:edgePorts(6,0,3)},
+  grinder:{width:4,height:6,inputs:edgePorts(6,2,0),outputs:edgePorts(6,0,3)},
+  seedPicker:{width:5,height:5,inputs:edgePorts(5,2,0),outputs:edgePorts(5,0,4)},
+  planter:{width:5,height:5,inputs:[...edgePorts(5,2,0),{x:2,y:4,side:1,transport:"pipe",modes:["fluid"]}],outputs:edgePorts(5,0,4)},
   reactor:{width:5,height:5,inputs:[{x:0,y:1,side:2},{x:0,y:3,side:2,transport:"pipe"}],outputs:[{x:4,y:1,side:0,transport:"pipe"},{x:4,y:3,side:0,transport:"pipe"}]},
+  forge:{width:5,height:5,inputs:[...edgePorts(5,2,0),{x:2,y:4,side:1,transport:"pipe"}],outputs:edgePorts(5,0,4)},
   gearAssembler:{width:4,height:6,inputs:edgePorts(6,2,0),outputs:edgePorts(6,0,3)},
   waterPump:{width:2,height:2,inputs:[],outputs:[{x:1,y:1,side:0,transport:"pipe"}]},
   splitter:{width:1,height:1,inputs:[{x:0,y:0,side:2}],outputs:[{x:0,y:0,side:0},{x:0,y:0,side:1},{x:0,y:0,side:3}]},
@@ -126,17 +211,20 @@ function rotatePort(port:PortSpec,width:number,height:number,rotation:Direction)
 }
 
 function resolvePorts(grid:Grid):ResolvedPort[] {
-  const entities=new Map<string,{kind:Kind;rotation:Direction;positions:Point[]}>();
+  const entities=new Map<string,{kind:Kind;rotation:Direction;recipeId?:string;positions:Point[]}>();
   Object.entries(grid).forEach(([key,cell])=>{
     if(!EQUIPMENT_LAYOUTS[cell.kind])return;
     const [x,y]=key.split(",").map(Number);
-    const entity=entities.get(cell.id)??{kind:cell.kind,rotation:cell.rotation,positions:[]};
+    const entity=entities.get(cell.id)??{kind:cell.kind,rotation:cell.rotation,recipeId:cell.recipeId,positions:[]};
+    if(cell.root&&cell.recipeId)entity.recipeId=cell.recipeId;
     entity.positions.push({x,y}); entities.set(cell.id,entity);
   });
   const ports:ResolvedPort[]=[];
   entities.forEach((entity,entityId)=>{
     const layout=EQUIPMENT_LAYOUTS[entity.kind];
     if(!layout)return;
+    const definition=entity.kind in MACHINE_DEFINITIONS?MACHINE_DEFINITIONS[entity.kind as ProductionKind]:undefined;
+    const mode=definition?activeRecipe(definition,entity.recipeId).mode:undefined;
     const minX=Math.min(...entity.positions.map(({x})=>x)),minY=Math.min(...entity.positions.map(({y})=>y));
     const append=(spec:PortSpec,type:PortType,index:number)=>{
       const rotated=rotatePort(spec,layout.width,layout.height,entity.rotation);
@@ -144,8 +232,8 @@ function resolvePorts(grid:Grid):ResolvedPort[] {
       const cellX=minX+rotated.x,cellY=minY+rotated.y;
       ports.push({key:`${entityId}:${type}:${index}`,entityId,entityKind:entity.kind,type,index,side:rotated.side,transport:spec.transport??"belt",cellX,cellY,externalX:cellX+dx,externalY:cellY+dy});
     };
-    layout.inputs.forEach((port,index)=>append(port,"input",index));
-    layout.outputs.forEach((port,index)=>append(port,"output",index));
+    layout.inputs.filter((port)=>!port.modes||Boolean(mode&&port.modes.includes(mode))).forEach((port,index)=>append(port,"input",index));
+    layout.outputs.filter((port)=>!port.modes||Boolean(mode&&port.modes.includes(mode))).forEach((port,index)=>append(port,"output",index));
   });
   return ports;
 }
@@ -317,11 +405,17 @@ const tools: { kind: Kind; label: string; type:"tool"|"device"; category?:Device
   { kind: "pipeMerger", label: "管道汇流器", type:"device", category:"仓储存取", glyph: "PM", desc: "至多 3 入 · 1 出", image:"/assets/machines/pipe-merger.svg" },
   { kind: "pipeBridge", label: "管道桥", type:"device", category:"仓储存取", glyph: "PB", desc: "两条管道正交跨越", image:"/assets/machines/pipe-bridge.svg" },
   { kind: "refiner", label: "精炼炉", type:"device", category:"基础生产", glyph: "R", desc: "矿石 → 金属块", image:"/assets/machines/refinery.webp" },
+  { kind: "crusher", label: "粉碎机", type:"device", category:"基础生产", glyph: "CR", desc: "3×3 · 固体粉碎", image:"/assets/machines/crusher.webp" },
   { kind: "fitter", label: "配件机", type:"device", category:"基础生产", glyph: "F", desc: "金属块 → 零件", image:"/assets/machines/assembler.webp" },
   { kind: "molder", label: "塑形机", type:"device", category:"基础生产", glyph: "MO", desc: "3×3 · 容器塑形", image:"/assets/machines/molder.webp" },
+  { kind: "seedPicker", label: "采种机", type:"device", category:"基础生产", glyph: "SP", desc: "5×5 · 植物采种", image:"/assets/machines/seed-picker.webp" },
+  { kind: "planter", label: "种植机", type:"device", category:"基础生产", glyph: "PL", desc: "5×5 · 固体/液体模式", image:"/assets/machines/planter.webp" },
   { kind: "gearAssembler", label: "装备原件机", type:"device", category:"合成制造", glyph: "GA", desc: "6×4 · 双物料合成", image:"/assets/machines/gear-assembler.webp" },
   { kind: "filler", label: "灌装机", type:"device", category:"合成制造", glyph: "FI", desc: "4×6 · 固体与流体输入", image:"/assets/machines/filler.webp" },
+  { kind: "sealer", label: "封装机", type:"device", category:"合成制造", glyph: "PK", desc: "6×4 · 电池与爆炸物", image:"/assets/machines/sealer.webp" },
+  { kind: "grinder", label: "研磨机", type:"device", category:"合成制造", glyph: "GR", desc: "6×4 · 粉末精细研磨", image:"/assets/machines/grinder.webp" },
   { kind: "reactor", label: "反应池", type:"device", category:"合成制造", glyph: "RC", desc: "5×5 · 固液反应", image:"/assets/machines/reactor.webp" },
+  { kind: "forge", label: "天有洪炉", type:"device", category:"合成制造", glyph: "FS", desc: "5×5 · 息壤合成", image:"/assets/machines/forge-of-the-sky.webp" },
   { kind: "waterPump", label: "水泵", type:"device", category:"资源开采", glyph: "WP", desc: "2×2 · 清水 60/min", image:"/assets/machines/water-pump.svg" },
   { kind: "powerPole", label: "供电桩", type:"device", category:"电力供应", glyph: "PWR", desc: "2×2 · 供电范围 12×12", image:"/assets/machines/supply-pole.webp" },
 ];
@@ -440,7 +534,10 @@ export default function Home() {
       const targetPort=resolvedPorts.find((port)=>port.transport===route.kind&&port.type==="input"&&port.externalX===last.x&&port.externalY===last.y&&last.cell.rotation===opposite(port.side));
       const depotCell=sourcePort?.entityKind==="depot"?Object.values(grid).find((cell)=>cell.id===sourcePort.entityId):undefined;
       const sourceDefinition=sourcePort&&sourcePort.entityKind in MACHINE_DEFINITIONS?MACHINE_DEFINITIONS[sourcePort.entityKind as ProductionKind]:undefined;
-      const item=sourcePort?.entityKind==="depot"?INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===depotCell?.itemId):sourceDefinition?INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===sourceDefinition.output.itemId):undefined;
+      const sourceCell=sourceDefinition?Object.values(grid).find((cell)=>cell.id===sourcePort?.entityId):undefined;
+      const sourceRecipe=sourceDefinition?activeRecipe(sourceDefinition,sourceCell?.recipeId):undefined;
+      const sourceOutput=sourceRecipe?.outputs.find((output)=>itemTransport(output.itemId)===route.kind);
+      const item=sourcePort?.entityKind==="depot"?INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===depotCell?.itemId):INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===sourceOutput?.itemId);
       return {...route,sourcePort,targetPort,sourceConnected:Boolean(sourcePort),targetConnected:Boolean(targetPort),valid:Boolean(sourcePort),itemId:item?.id,itemName:item?.name??(sourcePort?.entityKind==="depot"?"取货口未选择物品":"未接入输出口"),itemImage:item?.image??""};
     });
     for(let pass=0;pass<6;pass++)routes.forEach((route)=>{
@@ -490,17 +587,17 @@ export default function Home() {
         const entity=productionEntities.get(cell.id)??{kind,positions:[],cell};entity.positions.push({x,y});productionEntities.set(cell.id,entity);
       });
       productionEntities.forEach((entity,id)=>{
-        const definition=MACHINE_DEFINITIONS[entity.kind],inventory=ensureInventory(id);
+        const definition=MACHINE_DEFINITIONS[entity.kind],currentRecipe=activeRecipe(definition,entity.cell.recipeId),inventory=ensureInventory(id);
         const minX=Math.min(...entity.positions.map(({x})=>x)),minY=Math.min(...entity.positions.map(({y})=>y));
         const powered=powerZones.some((zone)=>zone.x<minX+(entity.cell.width??definition.width)&&zone.x+zone.size>minX&&zone.y<minY+(entity.cell.height??definition.height)&&zone.y+zone.size>minY);
-        const inputsReady=definition.inputs.every((requirement)=>(inventory.input[requirement.itemId]??0)>=requirement.amount);
+        const inputsReady=currentRecipe.inputs.every((requirement)=>(inventory.input[requirement.itemId]??0)>=requirement.amount);
         const outputTotal=Object.values(inventory.output).reduce((sum,quantity)=>sum+quantity,0);
-        if(!powered||!inputsReady||outputTotal+definition.output.amount>OUTPUT_CAPACITY)return;
+        const outputAmount=currentRecipe.outputs.reduce((sum,output)=>sum+output.amount,0);
+        if(!powered||!inputsReady||outputTotal+outputAmount>OUTPUT_CAPACITY)return;
         const nextProgress=(processes[id]??0)+1;
-        if(nextProgress<definition.durationTicks){processes[id]=nextProgress;return}
-        definition.inputs.forEach((requirement)=>{inventory.input[requirement.itemId]=Math.max(0,(inventory.input[requirement.itemId]??0)-requirement.amount);addQuantity(consumedThisTick,requirement.itemId,requirement.amount)});
-        inventory.output[definition.output.itemId]=(inventory.output[definition.output.itemId]??0)+definition.output.amount;
-        addQuantity(producedThisTick,definition.output.itemId,definition.output.amount);
+        if(nextProgress<currentRecipe.durationTicks){processes[id]=nextProgress;return}
+        currentRecipe.inputs.forEach((requirement)=>{inventory.input[requirement.itemId]=Math.max(0,(inventory.input[requirement.itemId]??0)-requirement.amount);addQuantity(consumedThisTick,requirement.itemId,requirement.amount)});
+        currentRecipe.outputs.forEach((output)=>{inventory.output[output.itemId]=(inventory.output[output.itemId]??0)+output.amount;addQuantity(producedThisTick,output.itemId,output.amount)});
         processes[id]=0;
       });
       const previousByRoute=new Map<string,TransitItem[]>();
@@ -567,18 +664,18 @@ export default function Home() {
     });
     const states:Record<string,MachineState>={};
     entities.forEach(({cell,positions},id)=>{
-      const kind=cell.kind as ProductionKind,definition=MACHINE_DEFINITIONS[kind];
+      const kind=cell.kind as ProductionKind,definition=MACHINE_DEFINITIONS[kind],currentRecipe=activeRecipe(definition,cell.recipeId);
       const width=cell.width??definition.width, height=cell.height??definition.height;
       const inventory=simulation.inventories[id]??{input:{},output:{}};
       const solidInputTotal=inputTotalFor(inventory.input,"belt"),fluidInputTotal=inputTotalFor(inventory.input,"pipe"),outputTotal=Object.values(inventory.output).reduce((sum,quantity)=>sum+quantity,0);
-      const hasInput=definition.inputs.every((requirement)=>(inventory.input[requirement.itemId]??0)>=requirement.amount);
-      const hasOutput=outputTotal+definition.output.amount<=OUTPUT_CAPACITY;
+      const hasInput=currentRecipe.inputs.every((requirement)=>(inventory.input[requirement.itemId]??0)>=requirement.amount);
+      const hasOutput=outputTotal+currentRecipe.outputs.reduce((sum,output)=>sum+output.amount,0)<=OUTPUT_CAPACITY;
       const minX=Math.min(...positions.map(({x})=>x)),minY=Math.min(...positions.map(({y})=>y));
       const powered=powerZones.some((zone)=>zone.x<minX+width&&zone.x+zone.size>minX&&zone.y<minY+height&&zone.y+zone.size>minY);
       const progressTicks=simulation.processes[id]??0;
       const status:MachineState["status"]=!powered?"unpowered":!running?"idle":!hasInput?"starved":!hasOutput?"blocked":"running";
-      const progress=Math.min(100,Math.round(progressTicks/definition.durationTicks*100));
-      states[id]={id,kind,status,progress,remaining:status==="running"?Math.max(0,(definition.durationTicks-progressTicks)/SIM_TICKS_PER_SECOND).toFixed(1):"--",hasInput,hasOutput,powered,inventoryFull:solidInputTotal>=inputCapacityFor(kind,"belt")||fluidInputTotal>=inputCapacityFor(kind,"pipe")||outputTotal>=OUTPUT_CAPACITY};
+      const progress=Math.min(100,Math.round(progressTicks/currentRecipe.durationTicks*100));
+      states[id]={id,kind,recipeId:currentRecipe.id,status,progress,remaining:status==="running"?Math.max(0,(currentRecipe.durationTicks-progressTicks)/SIM_TICKS_PER_SECOND).toFixed(1):"--",hasInput,hasOutput,powered,inventoryFull:solidInputTotal>=inputCapacityFor(kind,"belt")||fluidInputTotal>=inputCapacityFor(kind,"pipe")||outputTotal>=OUTPUT_CAPACITY};
     });
     return states;
   },[grid,powerZones,simulation.inventories,simulation.processes,running]);
@@ -623,7 +720,7 @@ export default function Home() {
     Object.values(grid).forEach((cell)=>{
       if(entityIds.has(cell.id))return;entityIds.add(cell.id);
       if(cell.kind==="depot"&&cell.itemId)itemIds.add(cell.itemId);
-      if(cell.kind in MACHINE_DEFINITIONS){const definition=MACHINE_DEFINITIONS[cell.kind as ProductionKind];definition.inputs.forEach((input)=>itemIds.add(input.itemId));itemIds.add(definition.output.itemId)}
+      if(cell.kind in MACHINE_DEFINITIONS){const currentRecipe=activeRecipe(MACHINE_DEFINITIONS[cell.kind as ProductionKind],cell.recipeId);currentRecipe.inputs.forEach((input)=>itemIds.add(input.itemId));currentRecipe.outputs.forEach((output)=>itemIds.add(output.itemId))}
     });
     connectedFlowRoutes.forEach((route)=>{if(route.itemId)itemIds.add(route.itemId)});
     Object.values(simulation.inventories).forEach((inventory)=>{Object.keys(inventory.input).forEach((itemId)=>itemIds.add(itemId));Object.keys(inventory.output).forEach((itemId)=>itemIds.add(itemId))});
@@ -686,14 +783,16 @@ export default function Home() {
     });
   },[beltDraft,flowRoutes]);
   const selectedDefinition=selectedEntity&&selectedEntity.kind in MACHINE_DEFINITIONS?MACHINE_DEFINITIONS[selectedEntity.kind as ProductionKind]:null;
+  const selectedRecipe=selectedDefinition?activeRecipe(selectedDefinition,selectedEntity?.recipeId):null;
+  const selectedModes=selectedDefinition?[...new Set(selectedDefinition.recipes.map((candidate)=>candidate.mode))]:[];
   const selectedInventory=selectedEntityId?simulation.inventories[selectedEntityId]??{input:{},output:{}}:{input:{},output:{}};
   const inventoryMenuVisible=Boolean(selectedEntity&&selectedEntity.kind!=="depot"&&selectedEntity.kind!=="powerPole");
-  const selectedInputItemIds=[...new Set([...(selectedDefinition?.inputs.map((item)=>item.itemId)??[]),...Object.keys(selectedInventory.input)])];
+  const selectedInputItemIds=[...new Set([...(selectedRecipe?.inputs.map((item)=>item.itemId)??[]),...Object.keys(selectedInventory.input)])];
   const selectedSolidInputItemIds=selectedInputItemIds.filter((itemId)=>itemTransport(itemId)==="belt");
   const selectedFluidInputItemIds=selectedInputItemIds.filter((itemId)=>itemTransport(itemId)==="pipe");
   const selectedSolidInputTotal=inputTotalFor(selectedInventory.input,"belt");
   const selectedFluidInputTotal=inputTotalFor(selectedInventory.input,"pipe");
-  const selectedOutputItemIds=[...new Set([...(selectedDefinition?[selectedDefinition.output.itemId]:[]),...Object.keys(selectedInventory.output)])];
+  const selectedOutputItemIds=[...new Set([...(selectedRecipe?.outputs.map((item)=>item.itemId)??[]),...Object.keys(selectedInventory.output)])];
   const pickedWidth=pickedEntity?Math.max(...pickedEntity.cells.map((cell)=>cell.dx))+1:0;
   const pickedHeight=pickedEntity?Math.max(...pickedEntity.cells.map((cell)=>cell.dy))+1:0;
   const catalogLayout=catalogDrag?EQUIPMENT_LAYOUTS[catalogDrag]:undefined;
@@ -956,6 +1055,16 @@ export default function Home() {
     setNotice(`仓库取货口已设为 ${item.name} · 有效连接后按 30/min 输出`);
   }
 
+  function setMachineRecipe(entityId:string,recipeId:string) {
+    const entity=Object.values(grid).find((cell)=>cell.id===entityId);
+    if(!entity||!(entity.kind in MACHINE_DEFINITIONS))return;
+    const definition=MACHINE_DEFINITIONS[entity.kind as ProductionKind],nextRecipe=definition.recipes.find((candidate)=>candidate.id===recipeId);
+    if(!nextRecipe)return;
+    setGrid((old)=>Object.fromEntries(Object.entries(old).map(([key,cell])=>[key,cell.id===entityId?{...cell,recipeId}:cell])));
+    setSimulation((previous)=>{const processes={...previous.processes};delete processes[entityId];return {...previous,processes}});
+    setNotice(`${definition.name}已切换为${modeLabel(nextRecipe.mode)} · ${nextRecipe.name} · 当前加工周期已清零`);
+  }
+
   function addInventory(entityId:string,side:"input"|"output",itemId:string,amount:number) {
     const item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===itemId);
     if(!item||!Number.isFinite(amount)||amount<=0)return;
@@ -1019,7 +1128,8 @@ export default function Home() {
       if (cells.some((k) => old[k]||pipeGrid[k])) { setNotice("设备占地与现有设施或管道冲突"); return old; }
       const id = crypto.randomUUID(); const next = { ...old };
       const rootIndex=Math.floor(height/2)*width+Math.floor(width/2);
-      cells.forEach((k, i) => next[k] = { kind,rotation:0,id,root:i===rootIndex,partX:i%width,partY:Math.floor(i/width),size:Math.max(width,height),width,height });
+      const recipeId=kind in MACHINE_DEFINITIONS?MACHINE_DEFINITIONS[kind as ProductionKind].recipes[0].id:undefined;
+      cells.forEach((k, i) => next[k] = { kind,rotation:0,id,root:i===rootIndex,partX:i%width,partY:Math.floor(i/width),size:Math.max(width,height),width,height,recipeId });
       setSelected("belt");setSelectionMode(true);setSelectedEntityId(id);setSelectedTransportKey(null);setNotice(`${tools.find((tool)=>tool.kind===kind)?.label??"设备"}已放置 · 已打开设备详情`);
       return next;
     });
@@ -1146,7 +1256,10 @@ export default function Home() {
             {beltBuildMode&&<div className="belt-build-toolbar"><span><kbd>{beltBuildMode==="pipe"?"Q":"E"}</kbd> {beltBuildMode==="pipe"?"管道":"传送带"}模式</span><strong>{beltDraft?`${beltDraft.waypoints.length} 个路径点`:"点击创建起点"}</strong><small>{beltDraft?"移动鼠标实时预览自动寻路":"可从空格或匹配类型的设备输出口开始"}</small><span><kbd>Esc / {beltBuildMode==="pipe"?"Q":"E"}</kbd> 完成　<kbd>右键</kbd> 取消</span></div>}
             {inventoryMenuVisible&&selectedEntityId&&selectedEntity&&<aside className="device-menu" role="dialog" aria-label={`${tools.find((tool)=>tool.kind===selectedEntity.kind)?.label??"设备"}库存`}>
               <header><div><small>DEVICE BUFFER</small><strong>{selectedDefinition?.name??tools.find((tool)=>tool.kind===selectedEntity.kind)?.label}</strong></div><button aria-label="关闭设备库存" onClick={()=>setSelectedEntityId(null)}>×</button></header>
-              {selectedDefinition&&<div className="device-process"><span>{selectedDefinition.recipe}</span><i><b style={{width:`${machineStates[selectedEntityId]?.progress??0}%`}}/></i><small>{machineStates[selectedEntityId]?.status==="running"?`处理中 · 剩余 ${machineStates[selectedEntityId]?.remaining}s`:machineStates[selectedEntityId]?.status==="blocked"?"产出库存已满 · 已阻塞":"等待处理条件"}</small></div>}
+              {selectedDefinition&&selectedRecipe&&<>
+                <section className="recipe-control"><div className="recipe-heading"><strong>工作模式与配方</strong><span>{selectedDefinition.powerUsage} 电力</span></div>{selectedModes.length>1&&<div className="mode-switch" role="group" aria-label="设备工作模式">{selectedModes.map((mode)=><button key={mode} className={selectedRecipe.mode===mode?"active":""} onClick={()=>setMachineRecipe(selectedEntityId,selectedDefinition.recipes.find((candidate)=>candidate.mode===mode)!.id)}>{modeLabel(mode)}</button>)}</div>}<label><span>当前配方</span><select aria-label="当前处理配方" value={selectedRecipe.id} onChange={(event)=>setMachineRecipe(selectedEntityId,event.target.value)}>{selectedDefinition.recipes.filter((candidate)=>candidate.mode===selectedRecipe.mode).map((candidate)=><option key={candidate.id} value={candidate.id}>{candidate.name} · {candidate.durationTicks/SIM_TICKS_PER_SECOND}s</option>)}</select></label><small>切换模式或配方会清零当前加工周期，输入与产出库存保持不变。</small></section>
+                <div className="device-process"><span>{recipeText(selectedRecipe)}</span><i><b style={{width:`${machineStates[selectedEntityId]?.progress??0}%`}}/></i><small>{machineStates[selectedEntityId]?.status==="running"?`处理中 · 剩余 ${machineStates[selectedEntityId]?.remaining}s`:machineStates[selectedEntityId]?.status==="blocked"?"产出库存已满 · 已阻塞":"等待处理条件"}</small></div>
+              </>}
               <section className="inventory-section solid"><div className="inventory-heading"><strong>固体输入库存</strong><span>{selectedSolidInputTotal} / {inputCapacityFor(selectedEntity.kind,"belt")}</span></div>
                 <div className="inventory-meter"><i style={{width:`${Math.min(100,selectedSolidInputTotal/inputCapacityFor(selectedEntity.kind,"belt")*100)}%`}}/></div>
                 <div className="inventory-list">{selectedSolidInputItemIds.length?selectedSolidInputItemIds.map((itemId)=>{const item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===itemId);return <div key={itemId}><span>{item&&<img src={item.image} alt=""/>}{item?.name??itemId}</span><b>{selectedInventory.input[itemId]??0}</b></div>}):<small>暂无固体物品</small>}</div>
@@ -1202,8 +1315,9 @@ export default function Home() {
                 const status = machineState?.status??"idle";
                 const stateLabel=status==="running"?"生产中":status==="waiting"?"周期等待":status==="starved"?"缺少输入":status==="blocked"?"输出阻塞":status==="unpowered"?"未供电":"已暂停";
                 const definition=cell&&cell.kind in MACHINE_DEFINITIONS?MACHINE_DEFINITIONS[cell.kind as ProductionKind]:null;
+                const currentRecipe=definition?activeRecipe(definition,cell?.recipeId):null;
                 const deviceInventoryFull=Boolean(cell&&inventoryFullIds.has(cell.id));
-                const machine = definition ? { name:definition.name, recipe:definition.recipe, state:stateLabel, blocked:status==="blocked"||deviceInventoryFull?"是":"否" } : null;
+                const machine = definition&&currentRecipe ? { name:definition.name, recipe:`${modeLabel(currentRecipe.mode)} · ${currentRecipe.name}`, state:stateLabel, blocked:status==="blocked"||deviceInventoryFull?"是":"否" } : null;
                 const processing = status === "running";
                 const processProgress = machineState?.progress??0;
                 const remainingSeconds = machineState?.remaining??"--";
@@ -1257,7 +1371,7 @@ export default function Home() {
           <div className="panel-heading"><span>生产监控</span><small>LIVE / 02</small></div>
           <div className="metric-grid"><div><small>设备</small><strong>{counts.devices}</strong></div><div><small>物流格</small><strong>{counts.belts}<span> 带</span> / {counts.pipes}<span> 管</span></strong></div><div><small>已供电</small><strong>{productionStates.filter((state)=>state.powered).length}<span> / {productionStates.length}</span></strong></div><div><small>效率</small><strong>{running&&productionStates.length ? Math.round(productionStates.filter((state)=>state.status==="running").length/productionStates.length*100) : "—"}<span>%</span></strong></div></div>
           <div className="section-title"><span>设备状态</span><small>{running ? "SIMULATION ACTIVE" : "SIMULATION PAUSED"}</small></div>
-          {productionStates.map((state,index)=>{const stateText=state.status==="running"?"生产中":state.status==="waiting"?"周期等待":state.status==="starved"?"缺少输入":state.status==="blocked"?"输出阻塞":state.status==="unpowered"?"未供电":"暂停",definition=MACHINE_DEFINITIONS[state.kind];return <div key={state.id} className={`machine-card ${state.status==="running"?"good":state.status!=="idle"?"warn":""}`}><div className="machine-icon"><img src={definition.image} alt=""/></div><div><strong>{definition.name} #{String(index+1).padStart(2,"0")}</strong><small>{definition.recipe} · {stateText} · {state.powered?"供电正常":"供电断开"}</small></div><em>{state.status==="running"?`${state.progress}%`:stateText}</em></div>})}
+          {productionStates.map((state,index)=>{const stateText=state.status==="running"?"生产中":state.status==="waiting"?"周期等待":state.status==="starved"?"缺少输入":state.status==="blocked"?"输出阻塞":state.status==="unpowered"?"未供电":"暂停",definition=MACHINE_DEFINITIONS[state.kind],currentRecipe=activeRecipe(definition,state.recipeId);return <div key={state.id} className={`machine-card ${state.status==="running"?"good":state.status!=="idle"?"warn":""}`}><div className="machine-icon"><img src={definition.image} alt=""/></div><div><strong>{definition.name} #{String(index+1).padStart(2,"0")}</strong><small>{modeLabel(currentRecipe.mode)} · {currentRecipe.name} · {stateText} · {state.powered?"供电正常":"供电断开"}</small></div><em>{state.status==="running"?`${state.progress}%`:stateText}</em></div>})}
           <div className="section-title"><span>产销统计</span><small>ROLLING 5 MINUTES</small></div>
           <section className="production-stats" aria-label="产线物品产出量与消耗量统计">
             {involvedStatsItems.length?<>
