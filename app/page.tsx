@@ -37,7 +37,8 @@ type PortSpec = { x:number; y:number; side:Direction; transport?:TransportKind }
 type EquipmentLayout = { width:number; height:number; inputs:PortSpec[]; outputs:PortSpec[] };
 type ResolvedPort = { key:string; entityId:string; entityKind:Kind; type:PortType; index:number; side:Direction; transport:TransportKind; cellX:number; cellY:number; externalX:number; externalY:number };
 type BeltReplan = { routeId:string; replaceKeys:string[]; anchorEntry?:Direction };
-type BeltDraft = { kind:TransportKind; cells:Point[]; waypoints:Point[]; sourcePort?:ResolvedPort; targetPort?:ResolvedPort; replan?:BeltReplan };
+type BeltJoin = { key:string; rotation:Direction };
+type BeltDraft = { kind:TransportKind; cells:Point[]; waypoints:Point[]; sourcePort?:ResolvedPort; targetPort?:ResolvedPort; join?:BeltJoin; replan?:BeltReplan };
 type RadialMenuState = { entityId:string; x:number; y:number; pointerId:number; active:RadialAction|null; phase:"open"|"confirming"; angle:number; distance:number };
 type RadialGesture = { entityId:string; pointerId:number; startX:number; startY:number; currentX:number; currentY:number; opened:boolean };
 type ConnectedFlowRoute = FlowRoute & { sourcePort?:ResolvedPort; targetPort?:ResolvedPort; sourceConnected:boolean; targetConnected:boolean; valid:boolean; itemId?:string; itemName:string; itemImage:string };
@@ -45,12 +46,17 @@ type IndustrialItem = { id:string; name:string; category:"矿物"|"工业产物"
 type DeviceInventory = { input:Record<string,number>; output:Record<string,number> };
 type MachineDefinition = { name:string; recipe:string; width:number; height:number; image:string; inputs:{itemId:string;amount:number}[]; output:{itemId:string;amount:number}; durationTicks:number };
 type TransitItem = { id:string; routeId:string; itemId:string; position:number; previousPosition:number };
-type SimulationState = { tick:number; inventories:Record<string,DeviceInventory>; processes:Record<string,number>; transits:TransitItem[]; routeCursor:Record<string,number>; laneReadyAt:Record<string,number>; routeTransfers:Record<string,number[]> };
-const INPUT_CAPACITY=60;
+type ItemStatSample = { second:number; produced:Record<string,number>; consumed:Record<string,number> };
+type SimulationState = { tick:number; inventories:Record<string,DeviceInventory>; processes:Record<string,number>; transits:TransitItem[]; routeCursor:Record<string,number>; laneReadyAt:Record<string,number>; routeTransfers:Record<string,number[]>; itemStats:ItemStatSample[] };
+const SOLID_INPUT_CAPACITY=50;
+const FLUID_INPUT_CAPACITY=50;
 const OUTPUT_CAPACITY=60;
 const totalInventory=(bucket:Record<string,number>)=>Object.values(bucket).reduce((sum,quantity)=>sum+quantity,0);
-const inputCapacityFor=(kind?:Kind)=>kind==="storagePort"?240:["splitter","merger","logisticsBridge","pipeSplitter","pipeMerger","pipeBridge"].includes(kind??"")?30:INPUT_CAPACITY;
+const inputCapacityFor=(kind:Kind|undefined,transport:TransportKind)=>kind==="storagePort"?240:["splitter","merger","logisticsBridge","pipeSplitter","pipeMerger","pipeBridge"].includes(kind??"")?30:transport==="pipe"?FLUID_INPUT_CAPACITY:SOLID_INPUT_CAPACITY;
 const secondsToTicks=(seconds:number)=>Math.round(seconds*SIM_TICKS_PER_SECOND);
+const addQuantity=(bucket:Record<string,number>,itemId:string,amount:number)=>{bucket[itemId]=(bucket[itemId]??0)+amount};
+const chartPath=(values:number[],maximum:number,width=240,height=82)=>values.map((value,index)=>`${index?"L":"M"} ${(index/Math.max(1,values.length-1)*width).toFixed(2)} ${(height-value/Math.max(1,maximum)*height).toFixed(2)}`).join(" ");
+const emptySimulationState=():SimulationState=>({tick:0,inventories:{},processes:{},transits:[],routeCursor:{},laneReadyAt:{},routeTransfers:{},itemStats:[]});
 
 const INDUSTRIAL_ITEMS:IndustrialItem[] = [
   {id:"blue-iron-ore",name:"蓝铁矿",category:"矿物",image:"/assets/items/blue-iron-ore.webp"},
@@ -67,9 +73,12 @@ const INDUSTRIAL_ITEMS:IndustrialItem[] = [
   {id:"blue-iron-bottle",name:"蓝铁瓶",category:"工业产物",image:"/assets/items/blue-iron-bottle.svg"},
   {id:"water-filled-blue-iron-bottle",name:"蓝铁瓶（清水）",category:"工业产物",image:"/assets/items/water-filled-blue-iron-bottle.svg"},
   {id:"xiranite",name:"息壤",category:"工业产物",image:"/assets/items/xiranite.svg"},
-  {id:"clean-water",name:"清水",category:"流体",image:"/assets/items/clean-water.svg",color:"#70b6d2"},
-  {id:"liquid-xiranite",name:"液化息壤",category:"流体",image:"/assets/items/liquid-xiranite.svg",color:"#72b99a"},
+  {id:"clean-water",name:"清水",category:"流体",image:"/assets/items/clean-water.svg",color:"#a9dbea"},
+  {id:"liquid-xiranite",name:"液化息壤",category:"流体",image:"/assets/items/liquid-xiranite.svg",color:"#b8dfcf"},
 ];
+
+const itemTransport=(itemId:string):TransportKind=>INDUSTRIAL_ITEMS.find((item)=>item.id===itemId)?.category==="流体"?"pipe":"belt";
+const inputTotalFor=(bucket:Record<string,number>,transport:TransportKind)=>Object.entries(bucket).reduce((sum,[itemId,quantity])=>sum+(itemTransport(itemId)===transport?quantity:0),0);
 
 const MACHINE_DEFINITIONS:Record<ProductionKind,MachineDefinition> = {
   refiner:{name:"精炼炉",recipe:"蓝铁矿 ×1 → 蓝铁块 ×1",width:3,height:3,image:"/assets/machines/refinery.webp",inputs:[{itemId:"blue-iron-ore",amount:1}],output:{itemId:"blue-iron-block",amount:1},durationTicks:secondsToTicks(2)},
@@ -92,7 +101,7 @@ const EQUIPMENT_LAYOUTS: Partial<Record<Kind,EquipmentLayout>> = {
   filler:{width:4,height:6,inputs:[...edgePorts(6,2,0),{x:1,y:5,side:1,transport:"pipe"}],outputs:edgePorts(6,0,3)},
   reactor:{width:5,height:5,inputs:[{x:0,y:1,side:2},{x:0,y:3,side:2,transport:"pipe"}],outputs:[{x:4,y:1,side:0,transport:"pipe"},{x:4,y:3,side:0,transport:"pipe"}]},
   gearAssembler:{width:4,height:6,inputs:edgePorts(6,2,0),outputs:edgePorts(6,0,3)},
-  waterPump:{width:2,height:2,inputs:[],outputs:[{x:1,y:0,side:0,transport:"pipe"},{x:1,y:1,side:0,transport:"pipe"}]},
+  waterPump:{width:2,height:2,inputs:[],outputs:[{x:1,y:1,side:0,transport:"pipe"}]},
   splitter:{width:1,height:1,inputs:[{x:0,y:0,side:2}],outputs:[{x:0,y:0,side:0},{x:0,y:0,side:1},{x:0,y:0,side:3}]},
   merger:{width:1,height:1,inputs:[{x:0,y:0,side:2},{x:0,y:0,side:1},{x:0,y:0,side:3}],outputs:[{x:0,y:0,side:0}]},
   logisticsBridge:{width:1,height:1,inputs:[{x:0,y:0,side:2},{x:0,y:0,side:3}],outputs:[{x:0,y:0,side:0},{x:0,y:0,side:1}]},
@@ -182,7 +191,7 @@ function makeDraftRoute(draft:BeltDraft):FlowRoute|null {
   const cells=draft.cells.map((point,index,array)=>{
     const previous=array[index-1],next=array[index+1];
     const entry=previous?directionBetween(point.x,point.y,previous.x,previous.y)??undefined:draft.replan?.anchorEntry??(draft.sourcePort?opposite(draft.sourcePort.side):undefined);
-    const rotation=next?directionBetween(point.x,point.y,next.x,next.y)!:draft.targetPort?opposite(draft.targetPort.side):previous?directionBetween(previous.x,previous.y,point.x,point.y)!:draft.sourcePort?.side??0;
+    const rotation=next?directionBetween(point.x,point.y,next.x,next.y)!:draft.targetPort?opposite(draft.targetPort.side):draft.join?.rotation??(previous?directionBetween(previous.x,previous.y,point.x,point.y)!:draft.sourcePort?.side??0);
     return {x:point.x,y:point.y,cell:{kind:draft.kind,rotation,entry,id:`draft-${index}`,root:true}};
   });
   return {id:`${draft.kind}-draft`,kind:draft.kind,cells,path:roundedPath(cells)};
@@ -198,7 +207,12 @@ function arrowAngle(cell: Cell) {
 function arrowAnchor(x: number, y: number, cell: Cell) {
   if (cell.entry == null || cell.entry === opposite(cell.rotation)) return { x:x+.5, y:y+.5 };
   const entry = DELTAS[cell.entry], exit = DELTAS[cell.rotation];
-  return { x:x+.5+(entry[0]+exit[0])*.1, y:y+.5+(entry[1]+exit[1])*.1 };
+  return { x:x+.5+(entry[0]+exit[0])*.125, y:y+.5+(entry[1]+exit[1])*.125 };
+}
+
+function pipeFillRatio(transits:TransitItem[],cellIndex:number,cellCount:number) {
+  const units=transits.filter((transit)=>Math.min(cellCount-1,Math.max(0,Math.floor(transit.position)))===cellIndex).length;
+  return Math.min(1,units/PIPE_LANE_PROFILE.unitsPerCell);
 }
 
 function pointOnRoute(route:FlowRoute,progress:number) {
@@ -338,7 +352,6 @@ const RADIAL_ACTIONS:{id:RadialAction;label:string;keyLabel:string;position:"top
 ];
 
 export default function Home() {
-  const [theme, setTheme] = useState<"light" | "dark">("light");
   const [grid, setGrid] = useState<Grid>(initial);
   const [pipeGrid,setPipeGrid]=useState<Grid>({});
   const [selected, setSelected] = useState<Kind>("belt");
@@ -354,7 +367,8 @@ export default function Home() {
   const [beltPreviewPoint,setBeltPreviewPoint]=useState<Point|null>(null);
   const [hoveredEntity,setHoveredEntity]=useState<{id:string;x:number;y:number}|null>(null);
   const [running, setRunning] = useState(false);
-  const [simulation,setSimulation]=useState<SimulationState>({tick:0,inventories:{},processes:{},transits:[],routeCursor:{},laneReadyAt:{},routeTransfers:{}});
+  const [simulation,setSimulation]=useState<SimulationState>(emptySimulationState);
+  const [selectedStatsItemId,setSelectedStatsItemId]=useState("blue-iron-ore");
   const [inventoryItemId,setInventoryItemId]=useState("blue-iron-ore");
   const [inventoryAmount,setInventoryAmount]=useState(10);
   const [notice, setNotice] = useState("演示蓝图已载入 · 按 E 规划传送带");
@@ -367,6 +381,9 @@ export default function Home() {
   const [radialMenu,setRadialMenu]=useState<RadialMenuState|null>(null);
   const [catalogDrag,setCatalogDrag]=useState<Kind|null>(null);
   const [catalogPreview,setCatalogPreview]=useState<Point|null>(null);
+  const catalogDragKindRef=useRef<Kind|null>(null);
+  const catalogDropRef=useRef<(x:number,y:number,kind:Kind)=>void>(()=>{});
+  const gridRef=useRef<HTMLDivElement>(null);
   const radialHoldTimer=useRef<number|null>(null);
   const radialConfirmTimer=useRef<number|null>(null);
   const radialGestureRef=useRef<RadialGesture|null>(null);
@@ -375,6 +392,24 @@ export default function Home() {
     if(radialHoldTimer.current!==null)window.clearTimeout(radialHoldTimer.current);
     if(radialConfirmTimer.current!==null)window.clearTimeout(radialConfirmTimer.current);
   },[]);
+
+  useEffect(()=>{catalogDropRef.current=placeTool});
+
+  useEffect(()=>{
+    const pointAt=(clientX:number,clientY:number,kind:Kind)=>{
+      const element=gridRef.current;if(!element)return null;
+      const layout=EQUIPMENT_LAYOUTS[kind],width=layout?.width??(kind==="powerPole"?2:1),height=layout?.height??(kind==="powerPole"?2:1),rect=element.getBoundingClientRect();
+      if(clientX<rect.left||clientY<rect.top||clientX>rect.right||clientY>rect.bottom)return null;
+      const x=Math.max(0,Math.min(cols-width,Math.floor((clientX-rect.left)/rect.width*cols))),y=Math.max(0,Math.min(rows-height,Math.floor((clientY-rect.top)/rect.height*rows)));
+      const valid=Array.from({length:width*height},(_,index)=>keyOf(x+index%width,y+Math.floor(index/width))).every((key)=>!grid[key]&&!pipeGrid[key]);
+      return{x,y,valid};
+    };
+    const move=(event:MouseEvent|PointerEvent)=>{const kind=catalogDragKindRef.current;if(!kind)return;const point=pointAt(event.clientX,event.clientY,kind);setCatalogPreview(point?{x:point.x,y:point.y}:null)};
+    const finish=(event:MouseEvent|PointerEvent)=>{const kind=catalogDragKindRef.current;if(!kind)return;const point=pointAt(event.clientX,event.clientY,kind);catalogDragKindRef.current=null;setCatalogDrag(null);setCatalogPreview(null);if(point?.valid)catalogDropRef.current(point.x,point.y,kind);else{setSelected("belt");setNotice(point?"目标占地与现有设备或物流线路冲突":"拖动已取消 · 请在画布网格内释放")}};
+    const cancel=()=>{if(catalogDragKindRef.current===null)return;catalogDragKindRef.current=null;setCatalogDrag(null);setCatalogPreview(null);setSelected("belt")};
+    window.addEventListener("pointermove",move);window.addEventListener("mousemove",move);window.addEventListener("pointerup",finish);window.addEventListener("mouseup",finish);window.addEventListener("pointercancel",cancel);
+    return()=>{window.removeEventListener("pointermove",move);window.removeEventListener("mousemove",move);window.removeEventListener("pointerup",finish);window.removeEventListener("mouseup",finish);window.removeEventListener("pointercancel",cancel)};
+  },[cols,grid,pipeGrid,rows]);
 
   const counts = useMemo(() => {
     const values = Object.values(grid);
@@ -438,6 +473,8 @@ export default function Home() {
       const routeCursor={...previous.routeCursor};
       const laneReadyAt={...previous.laneReadyAt};
       const routeTransfers=Object.fromEntries(Object.entries(previous.routeTransfers).map(([routeId,ticks])=>[routeId,ticks.filter((transferTick)=>tick-transferTick<=60*SIM_TICKS_PER_SECOND)]));
+      const producedThisTick:Record<string,number>={};
+      const consumedThisTick:Record<string,number>={};
       const ensureInventory=(id:string)=>inventories[id]??(inventories[id]={input:{},output:{}});
       const entityKinds=new Map<string,Kind>();
       const productionEntities=new Map<string,{kind:ProductionKind;positions:Point[];cell:Cell}>();
@@ -456,8 +493,9 @@ export default function Home() {
         if(!powered||!inputsReady||outputTotal+definition.output.amount>OUTPUT_CAPACITY)return;
         const nextProgress=(processes[id]??0)+1;
         if(nextProgress<definition.durationTicks){processes[id]=nextProgress;return}
-        definition.inputs.forEach((requirement)=>{inventory.input[requirement.itemId]=Math.max(0,(inventory.input[requirement.itemId]??0)-requirement.amount)});
+        definition.inputs.forEach((requirement)=>{inventory.input[requirement.itemId]=Math.max(0,(inventory.input[requirement.itemId]??0)-requirement.amount);addQuantity(consumedThisTick,requirement.itemId,requirement.amount)});
         inventory.output[definition.output.itemId]=(inventory.output[definition.output.itemId]??0)+definition.output.amount;
+        addQuantity(producedThisTick,definition.output.itemId,definition.output.amount);
         processes[id]=0;
       });
       const previousByRoute=new Map<string,TransitItem[]>();
@@ -467,7 +505,7 @@ export default function Home() {
       connectedFlowRoutes.forEach((route)=>{
         const lane=previousByRoute.get(route.id)??[];
         const target=route.targetPort?ensureInventory(route.targetPort.entityId):null;
-        const canExit=Boolean(target&&totalInventory(target.input)<inputCapacityFor(entityKinds.get(route.targetPort!.entityId)));
+        const canExit=Boolean(target&&inputTotalFor(target.input,route.kind)<inputCapacityFor(entityKinds.get(route.targetPort!.entityId),route.kind));
          const advanced=route.kind==="pipe"?advancePipeLane(lane,route.cells.length,canExit):advanceBeltLane(lane,route.cells.length,canExit);
         activeByRoute.set(route.id,advanced.active);activeTransits.push(...advanced.active);
         if(target)advanced.delivered.forEach((transit)=>{target.input[transit.itemId]=(target.input[transit.itemId]??0)+1});
@@ -496,11 +534,19 @@ export default function Home() {
           activeTransits.push(transit);activeByRoute.set(route.id,[...(activeByRoute.get(route.id)??[]),transit]);
           laneReadyAt[route.id]=nextLaneReadyTick(tick,route.kind==="pipe"?PIPE_HEADWAY_TICKS:BELT_HEADWAY_TICKS);
           routeTransfers[route.id]=[...(routeTransfers[route.id]??[]),tick];
+          if(sourceKind==="depot")addQuantity(producedThisTick,route.itemId!,1);
         });
         if(sourceKind!=="depot")dispatched.forEach((route)=>{const itemId=route.itemId!;sourceBucket[itemId]=Math.max(0,(sourceBucket[itemId]??0)-1)});
         if(dispatched.length)routeCursor[sourceId]=(routes.indexOf(dispatched[dispatched.length-1])+1)%routes.length;
       });
-      return {tick,inventories,processes,transits:activeTransits,routeCursor,laneReadyAt,routeTransfers};
+      const second=Math.floor(tick/SIM_TICKS_PER_SECOND),itemStats=(previous.itemStats??[]).map((sample)=>({second:sample.second,produced:{...sample.produced},consumed:{...sample.consumed}}));
+      if(Object.keys(producedThisTick).length||Object.keys(consumedThisTick).length){
+        const sample=itemStats[itemStats.length-1];
+        if(sample?.second===second){Object.entries(producedThisTick).forEach(([itemId,amount])=>addQuantity(sample.produced,itemId,amount));Object.entries(consumedThisTick).forEach(([itemId,amount])=>addQuantity(sample.consumed,itemId,amount))}
+        else itemStats.push({second,produced:producedThisTick,consumed:consumedThisTick});
+      }
+      // Storage-port delivery is inventory transfer, not consumption; recipe removal is the only consumption event.
+      return {tick,inventories,processes,transits:activeTransits,routeCursor,laneReadyAt,routeTransfers,itemStats:itemStats.filter((sample)=>sample.second>=second-64)};
     }),SIM_TICK_MS);
     return ()=>window.clearInterval(timer);
   },[running,grid,connectedFlowRoutes,powerZones]);
@@ -517,7 +563,7 @@ export default function Home() {
       const kind=cell.kind as ProductionKind,definition=MACHINE_DEFINITIONS[kind];
       const width=cell.width??definition.width, height=cell.height??definition.height;
       const inventory=simulation.inventories[id]??{input:{},output:{}};
-      const inputTotal=Object.values(inventory.input).reduce((sum,quantity)=>sum+quantity,0),outputTotal=Object.values(inventory.output).reduce((sum,quantity)=>sum+quantity,0);
+      const solidInputTotal=inputTotalFor(inventory.input,"belt"),fluidInputTotal=inputTotalFor(inventory.input,"pipe"),outputTotal=Object.values(inventory.output).reduce((sum,quantity)=>sum+quantity,0);
       const hasInput=definition.inputs.every((requirement)=>(inventory.input[requirement.itemId]??0)>=requirement.amount);
       const hasOutput=outputTotal+definition.output.amount<=OUTPUT_CAPACITY;
       const minX=Math.min(...positions.map(({x})=>x)),minY=Math.min(...positions.map(({y})=>y));
@@ -525,7 +571,7 @@ export default function Home() {
       const progressTicks=simulation.processes[id]??0;
       const status:MachineState["status"]=!powered?"unpowered":!running?"idle":!hasInput?"starved":!hasOutput?"blocked":"running";
       const progress=Math.min(100,Math.round(progressTicks/definition.durationTicks*100));
-      states[id]={id,kind,status,progress,remaining:status==="running"?Math.max(0,(definition.durationTicks-progressTicks)/SIM_TICKS_PER_SECOND).toFixed(1):"--",hasInput,hasOutput,powered,inventoryFull:inputTotal>=INPUT_CAPACITY||outputTotal>=OUTPUT_CAPACITY};
+      states[id]={id,kind,status,progress,remaining:status==="running"?Math.max(0,(definition.durationTicks-progressTicks)/SIM_TICKS_PER_SECOND).toFixed(1):"--",hasInput,hasOutput,powered,inventoryFull:solidInputTotal>=inputCapacityFor(kind,"belt")||fluidInputTotal>=inputCapacityFor(kind,"pipe")||outputTotal>=OUTPUT_CAPACITY};
     });
     return states;
   },[grid,powerZones,simulation.inventories,simulation.processes,running]);
@@ -544,7 +590,7 @@ export default function Home() {
     const ids=new Set<string>();
     Object.entries(simulation.inventories).forEach(([id,inventory])=>{
       const kind=entityKinds.get(id);
-      if(totalInventory(inventory.input)>=inputCapacityFor(kind)||totalInventory(inventory.output)>=OUTPUT_CAPACITY)ids.add(id);
+      if(inputTotalFor(inventory.input,"belt")>=inputCapacityFor(kind,"belt")||inputTotalFor(inventory.input,"pipe")>=inputCapacityFor(kind,"pipe")||totalInventory(inventory.output)>=OUTPUT_CAPACITY)ids.add(id);
     });
     return ids;
   },[entityKinds,simulation.inventories]);
@@ -555,7 +601,7 @@ export default function Home() {
   },[simulation.transits]);
   const stalledRouteIds=useMemo(()=>new Set(connectedFlowRoutes.filter((route)=>{
     if(!running||!route.valid)return false;
-    const targetBlocked=!route.targetPort||totalInventory((simulation.inventories[route.targetPort.entityId]??{input:{},output:{}}).input)>=inputCapacityFor(entityKinds.get(route.targetPort.entityId));
+    const targetBlocked=!route.targetPort||inputTotalFor((simulation.inventories[route.targetPort.entityId]??{input:{},output:{}}).input,route.kind)>=inputCapacityFor(entityKinds.get(route.targetPort.entityId),route.kind);
      return targetBlocked&&(route.kind==="pipe"?pipeLaneIsFull(transitsByRoute.get(route.id)??[],route.cells.length):beltLaneIsFull(transitsByRoute.get(route.id)??[],route.cells.length));
   }).map((route)=>route.id)),[connectedFlowRoutes,entityKinds,running,simulation.inventories,transitsByRoute]);
   const transportMeta=useMemo(()=>{
@@ -564,12 +610,29 @@ export default function Home() {
     connectedFlowRoutes.forEach((route)=>{const lane=transitsByRoute.get(route.id)??[],cargoCount=lane.length,isPipe=route.kind==="pipe",capacity=route.cells.length*(isPipe?PIPE_LANE_PROFILE.unitsPerCell:1),full=isPipe?pipeLaneIsFull(lane,route.cells.length):beltLaneIsFull(lane,route.cells.length),item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===route.itemId),rate=Math.round((simulation.routeTransfers[route.id]?.length??0)*60/observedSeconds);route.cells.forEach(({x,y})=>meta.set(`${route.kind}:${keyOf(x,y)}`,{kind:route.kind,name:route.itemName,image:route.itemImage,rate,connected:route.sourceConnected,targetConnected:route.targetConnected,travelSeconds:isPipe?route.cells.length/(PIPE_LANE_PROFILE.cellsPerTick*SIM_TICKS_PER_SECOND):beltTravelSeconds(route.cells.length),cargoCount,capacity,full,color:item?.color}))});
     return meta;
   },[connectedFlowRoutes,simulation.routeTransfers,simulation.tick,transitsByRoute]);
-  const itemFlowRates=useMemo(()=>{
-    const rates=new Map<string,number>();
-    const observedSeconds=Math.max(5,Math.min(60,simulation.tick/SIM_TICKS_PER_SECOND));
-    connectedFlowRoutes.forEach((route)=>{if(route.itemId){const rate=Math.round((simulation.routeTransfers[route.id]?.length??0)*60/observedSeconds);rates.set(route.itemId,(rates.get(route.itemId)??0)+rate)}});
-    return rates;
-  },[connectedFlowRoutes,simulation.routeTransfers,simulation.tick]);
+  const involvedStatsItems=useMemo(()=>{
+    const itemIds=new Set<string>();
+    const entityIds=new Set<string>();
+    Object.values(grid).forEach((cell)=>{
+      if(entityIds.has(cell.id))return;entityIds.add(cell.id);
+      if(cell.kind==="depot"&&cell.itemId)itemIds.add(cell.itemId);
+      if(cell.kind in MACHINE_DEFINITIONS){const definition=MACHINE_DEFINITIONS[cell.kind as ProductionKind];definition.inputs.forEach((input)=>itemIds.add(input.itemId));itemIds.add(definition.output.itemId)}
+    });
+    connectedFlowRoutes.forEach((route)=>{if(route.itemId)itemIds.add(route.itemId)});
+    Object.values(simulation.inventories).forEach((inventory)=>{Object.keys(inventory.input).forEach((itemId)=>itemIds.add(itemId));Object.keys(inventory.output).forEach((itemId)=>itemIds.add(itemId))});
+    simulation.itemStats.forEach((sample)=>{Object.keys(sample.produced).forEach((itemId)=>itemIds.add(itemId));Object.keys(sample.consumed).forEach((itemId)=>itemIds.add(itemId))});
+    return INDUSTRIAL_ITEMS.filter((item)=>itemIds.has(item.id));
+  },[connectedFlowRoutes,grid,simulation.inventories,simulation.itemStats]);
+  const selectedStatsItem=involvedStatsItems.find((item)=>item.id===selectedStatsItemId)??involvedStatsItems[0];
+  const statsChart=useMemo(()=>{
+    const currentSecond=Math.floor(simulation.tick/SIM_TICKS_PER_SECOND),samples=new Map(simulation.itemStats.map((sample)=>[sample.second,sample]));
+    const chartItemId=selectedStatsItem?.id??"";
+    const seconds=Array.from({length:60},(_,index)=>currentSecond-59+index);
+    const producedAmounts=seconds.map((second)=>samples.get(second)?.produced[chartItemId]??0),consumedAmounts=seconds.map((second)=>samples.get(second)?.consumed[chartItemId]??0);
+    const rollingRate=(amounts:number[])=>amounts.map((_,index)=>{const start=Math.max(0,index-4),window=amounts.slice(start,index+1);return window.reduce((sum,amount)=>sum+amount,0)*60/window.length});
+    const produced=rollingRate(producedAmounts),consumed=rollingRate(consumedAmounts),maximum=Math.max(1,...produced,...consumed);
+    return {produced,consumed,maximum,producedPath:chartPath(produced,maximum),consumedPath:chartPath(consumed,maximum),producedTotal:producedAmounts.reduce((sum,amount)=>sum+amount,0),consumedTotal:consumedAmounts.reduce((sum,amount)=>sum+amount,0)};
+  },[selectedStatsItem?.id,simulation.itemStats,simulation.tick]);
   const snapCandidate=useMemo(()=>{
     if(!beltBuildMode||!hoveredEntity)return null;
     const type:PortType=beltDraft?"input":"output";
@@ -586,16 +649,16 @@ export default function Home() {
     const target=snapCandidate?{x:snapCandidate.externalX,y:snapCandidate.externalY}:beltPreviewPoint;
     const start=beltDraft.cells[beltDraft.cells.length-1];
     if(start.x===target.x&&start.y===target.y)return null;
-    const replaceable=new Set(beltDraft.replan?.replaceKeys??[]);
     const transportGrid=beltDraft.kind==="pipe"?pipeGrid:grid;
-    const deviceBlocked=beltDraft.kind==="pipe"?Object.entries(grid).filter(([,cell])=>!isTransport(cell.kind)).map(([key])=>key):[];
-    if(((transportGrid[keyOf(target.x,target.y)]||deviceBlocked.includes(keyOf(target.x,target.y)))&&!snapCandidate&&!replaceable.has(keyOf(target.x,target.y)))||beltDraft.cells.slice(0,-1).some((cell)=>cell.x===target.x&&cell.y===target.y))return null;
-    const blocked=new Set([...deviceBlocked,...Object.keys(transportGrid).filter((key)=>!replaceable.has(key))]);
+    const targetKey=keyOf(target.x,target.y),targetFlow=transportGrid[targetKey];
+    const deviceBlocked=Object.entries(grid).filter(([,cell])=>!isTransport(cell.kind)).map(([key])=>key);
+    if((deviceBlocked.includes(targetKey)&&!snapCandidate)||beltDraft.cells.slice(0,-1).some((cell)=>cell.x===target.x&&cell.y===target.y))return null;
+    const blocked=new Set(deviceBlocked);
     beltDraft.cells.slice(0,-1).forEach((cell)=>blocked.add(keyOf(cell.x,cell.y)));
     blocked.delete(keyOf(start.x,start.y));blocked.delete(keyOf(target.x,target.y));
     const segment=findAutoPath(start,target,cols,rows,blocked);
     if(!segment)return null;
-    return makeDraftRoute({...beltDraft,cells:[...beltDraft.cells,...segment.slice(1)],targetPort:snapCandidate?.type==="input"?snapCandidate:undefined});
+    return makeDraftRoute({...beltDraft,cells:[...beltDraft.cells,...segment.slice(1)],targetPort:snapCandidate?.type==="input"?snapCandidate:undefined,join:targetFlow?.kind===beltDraft.kind?{key:targetKey,rotation:targetFlow.rotation}:undefined});
   },[beltBuildMode,beltDraft,beltPreviewPoint,cols,grid,hoveredEntity,pipeGrid,rows,snapCandidate]);
   const draftRoute=liveDraftRoute??committedDraftRoute;
   const displayFlowRoutes=useMemo(()=>{
@@ -612,6 +675,10 @@ export default function Home() {
   const selectedInventory=selectedEntityId?simulation.inventories[selectedEntityId]??{input:{},output:{}}:{input:{},output:{}};
   const inventoryMenuVisible=Boolean(selectedEntity&&selectedEntity.kind!=="depot"&&selectedEntity.kind!=="powerPole");
   const selectedInputItemIds=[...new Set([...(selectedDefinition?.inputs.map((item)=>item.itemId)??[]),...Object.keys(selectedInventory.input)])];
+  const selectedSolidInputItemIds=selectedInputItemIds.filter((itemId)=>itemTransport(itemId)==="belt");
+  const selectedFluidInputItemIds=selectedInputItemIds.filter((itemId)=>itemTransport(itemId)==="pipe");
+  const selectedSolidInputTotal=inputTotalFor(selectedInventory.input,"belt");
+  const selectedFluidInputTotal=inputTotalFor(selectedInventory.input,"pipe");
   const selectedOutputItemIds=[...new Set([...(selectedDefinition?[selectedDefinition.output.itemId]:[]),...Object.keys(selectedInventory.output)])];
   const pickedWidth=pickedEntity?Math.max(...pickedEntity.cells.map((cell)=>cell.dx))+1:0;
   const pickedHeight=pickedEntity?Math.max(...pickedEntity.cells.map((cell)=>cell.dy))+1:0;
@@ -821,10 +888,10 @@ export default function Home() {
     const point=port?{x:port.externalX,y:port.externalY}:{x,y};
     if(point.x<0||point.y<0||point.x>=cols||point.y>=rows){setNotice("路径点超出画布");return}
     const kind=beltDraft?.kind??beltBuildMode??"belt",transportGrid=kind==="pipe"?pipeGrid:grid;
-    const occupied=transportGrid[keyOf(point.x,point.y)],deviceOccupied=kind==="pipe"?grid[keyOf(point.x,point.y)]&&!isTransport(grid[keyOf(point.x,point.y)].kind):false;
+    const pointKey=keyOf(point.x,point.y),occupied=transportGrid[pointKey],baseAtPoint=grid[pointKey],deviceOccupied=Boolean(baseAtPoint&&!isTransport(baseAtPoint.kind));
     if(!beltDraft&&occupied?.kind===kind){startBeltReplan(point.x,point.y);return}
-    const replaceable=new Set(beltDraft?.replan?.replaceKeys??[]);
-    if((occupied||deviceOccupied)&&!replaceable.has(keyOf(point.x,point.y))){setNotice("该格已被同层物流或设备占用，请选择其他路径点");return}
+    if(!beltDraft&&deviceOccupied){setNotice("起点被设备占用，请从匹配的输入/输出口开始");return}
+    if(deviceOccupied&&!port){setNotice("路径点被设备占用，请选择其他位置");return}
     if(!beltDraft){
       setBeltDraft({kind,cells:[point],waypoints:[point],sourcePort:port?.type==="output"?port:undefined});
       setNotice(port?`已吸附到输出口 ${port.index+1} · 点击添加路径点`:`起点已创建 · 点击添加路径点`);
@@ -832,19 +899,20 @@ export default function Home() {
     }
     const start=beltDraft.cells[beltDraft.cells.length-1];
     if(start.x===point.x&&start.y===point.y){
-      if(port?.type==="input"){setBeltDraft({...beltDraft,targetPort:port});setNotice(`已吸附到输入口 ${port.index+1} · 按 E 或 Esc 完成`);return}
+      if(port?.type==="input"){setBeltDraft({...beltDraft,targetPort:port,join:undefined});setNotice(`已吸附到输入口 ${port.index+1} · 按 E 或 Esc 完成`);return}
       setNotice("该路径点已经存在");return;
     }
     if(beltDraft.cells.slice(0,-1).some((cell)=>cell.x===point.x&&cell.y===point.y)){setNotice("路径不能回接到当前草稿的既有格");return}
-    const deviceBlocked=kind==="pipe"?Object.entries(grid).filter(([,cell])=>!isTransport(cell.kind)).map(([key])=>key):[];
-    const blocked=new Set([...deviceBlocked,...Object.keys(transportGrid).filter((key)=>!replaceable.has(key))]);
+    const deviceBlocked=Object.entries(grid).filter(([,cell])=>!isTransport(cell.kind)).map(([key])=>key);
+    const blocked=new Set(deviceBlocked);
     beltDraft.cells.slice(0,-1).forEach((cell)=>blocked.add(keyOf(cell.x,cell.y)));
     blocked.delete(keyOf(start.x,start.y));blocked.delete(keyOf(point.x,point.y));
     const segment=findAutoPath(start,point,cols,rows,blocked);
     if(!segment){setNotice("没有可用路径，请增加一个中间路径点");return}
     const cells=[...beltDraft.cells,...segment.slice(1)];
-    setBeltDraft({...beltDraft,cells,waypoints:[...beltDraft.waypoints,point],targetPort:port?.type==="input"?port:undefined});
-    setNotice(port?`已吸附到输入口 ${port.index+1} · 按 E 或 Esc 完成`:`路径点 ${beltDraft.waypoints.length+1} 已创建 · 按 E 或 Esc 完成`);
+    const join=occupied?.kind===kind?{key:pointKey,rotation:occupied.rotation}:undefined;
+    setBeltDraft({...beltDraft,cells,waypoints:[...beltDraft.waypoints,point],targetPort:port?.type==="input"?port:undefined,join});
+    setNotice(port?`已吸附到输入口 ${port.index+1} · 按 E 或 Esc 完成`:join?`末端已按原方向接入现有${kind==="pipe"?"管道":"传送带"} · 按 E 或 Esc 完成`:`路径点 ${beltDraft.waypoints.length+1} 已创建 · 重叠线路将被覆盖`);
   }
 
   function finishBeltBuild() {
@@ -852,15 +920,15 @@ export default function Home() {
     const route=makeDraftRoute(beltDraft);
     if(!route){setBeltBuildMode(null);setBeltDraft(null);return}
     if(beltDraft.replan&&route.cells.length<2){setBeltBuildMode(null);setBeltDraft(null);setBeltPreviewPoint(null);setNotice("未添加新的下游路径 · 原线路保持不变");return}
-    const replaceable=new Set(beltDraft.replan?.replaceKeys??[]);replaceable.add(keyOf(route.cells[0].x,route.cells[0].y));
-    const transportGrid=beltDraft.kind==="pipe"?pipeGrid:grid;
-    if(route.cells.some(({x,y})=>(transportGrid[keyOf(x,y)]||(beltDraft.kind==="pipe"&&grid[keyOf(x,y)]&&!isTransport(grid[keyOf(x,y)].kind)))&&!replaceable.has(keyOf(x,y)))){setNotice("路径与现有设施冲突，未提交");return}
+    if(route.cells.some(({x,y})=>{const base=grid[keyOf(x,y)];return Boolean(base&&!isTransport(base.kind))})){setNotice("路径与现有设备冲突，未提交");return}
+    const overwrittenKeys=new Set(route.cells.map(({x,y})=>keyOf(x,y)));
+    const affectedRouteIds=new Set(flowRoutes.filter((candidate)=>candidate.kind===beltDraft.kind&&candidate.cells.some(({x,y})=>overwrittenKeys.has(keyOf(x,y)))).map((candidate)=>candidate.id));
     const write=(old:Grid)=>{const next={...old};beltDraft.replan?.replaceKeys.forEach((key)=>delete next[key]);route.cells.forEach(({x,y,cell})=>{next[keyOf(x,y)]={...cell,id:crypto.randomUUID()}});return next};
     if(beltDraft.kind==="pipe")setPipeGrid(write);else setGrid(write);
-    if(beltDraft.replan)setSimulation((previous)=>{const laneReadyAt={...previous.laneReadyAt},routeTransfers={...previous.routeTransfers};delete laneReadyAt[beltDraft.replan!.routeId];delete routeTransfers[beltDraft.replan!.routeId];return {...previous,laneReadyAt,routeTransfers,transits:previous.transits.filter((transit)=>transit.routeId!==beltDraft.replan!.routeId)}});
+    if(affectedRouteIds.size||beltDraft.replan)setSimulation((previous)=>{const laneReadyAt={...previous.laneReadyAt},routeTransfers={...previous.routeTransfers};affectedRouteIds.forEach((routeId)=>{delete laneReadyAt[routeId];delete routeTransfers[routeId]});if(beltDraft.replan){delete laneReadyAt[beltDraft.replan.routeId];delete routeTransfers[beltDraft.replan.routeId]}return {...previous,laneReadyAt,routeTransfers,transits:previous.transits.filter((transit)=>!affectedRouteIds.has(transit.routeId)&&transit.routeId!==beltDraft.replan?.routeId)}});
     setBeltBuildMode(null);setBeltDraft(null);setBeltPreviewPoint(null);setHoveredEntity(null);
     const label=beltDraft.kind==="pipe"?"管道":"传送带";
-    setNotice(beltDraft.replan?`${label}中段改线已提交 · 上游连接保持不变`:beltDraft.sourcePort?beltDraft.targetPort?`${label}已完成并连接输入/输出口`:`${label}已接输出口 · 末端未卸货时会逐格堆满并阻塞`:`${label}已完成 · 未连接设备输出口时不会生成物品`);
+    setNotice(beltDraft.join?`${label}已覆盖重叠格并按末端方向接入现有线路`:beltDraft.replan?`${label}中段改线已提交 · 上游连接保持不变`:beltDraft.sourcePort?beltDraft.targetPort?`${label}已完成并连接输入/输出口`:`${label}已接输出口 · 末端未卸货时会逐格堆满并阻塞`:`${label}已完成 · 未连接设备输出口时不会生成物品`);
   }
 
   function cancelBeltDraft() {
@@ -877,10 +945,10 @@ export default function Home() {
   function addInventory(entityId:string,side:"input"|"output",itemId:string,amount:number) {
     const item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===itemId);
     if(!item||!Number.isFinite(amount)||amount<=0)return;
-    const kind=entityKinds.get(entityId),capacity=side==="input"?inputCapacityFor(kind):OUTPUT_CAPACITY;
+    const kind=entityKinds.get(entityId),capacity=side==="input"?inputCapacityFor(kind,itemTransport(itemId)):OUTPUT_CAPACITY;
     setSimulation((previous)=>{
       const current=previous.inventories[entityId]??{input:{},output:{}};
-      const bucket={...current[side]},space=Math.max(0,capacity-totalInventory(bucket));
+      const bucket={...current[side]},space=Math.max(0,capacity-(side==="input"?inputTotalFor(bucket,itemTransport(itemId)):totalInventory(bucket)));
       const inserted=Math.min(Math.floor(amount),space);
       bucket[itemId]=(bucket[itemId]??0)+inserted;
       return {...previous,inventories:{...previous.inventories,[entityId]:{...current,[side]:bucket}}};
@@ -938,9 +1006,46 @@ export default function Home() {
       const id = crypto.randomUUID(); const next = { ...old };
       const rootIndex=Math.floor(height/2)*width+Math.floor(width/2);
       cells.forEach((k, i) => next[k] = { kind,rotation:0,id,root:i===rootIndex,partX:i%width,partY:Math.floor(i/width),size:Math.max(width,height),width,height });
-      setSelected(kind);setSelectedEntityId(id);setSelectedTransportKey(null);setNotice(`${tools.find((tool)=>tool.kind===kind)?.label??"设备"}已放置 · 单击可编辑`);
+      setSelected("belt");setSelectionMode(true);setSelectedEntityId(id);setSelectedTransportKey(null);setNotice(`${tools.find((tool)=>tool.kind===kind)?.label??"设备"}已放置 · 已打开设备详情`);
       return next;
     });
+  }
+
+  function beginCatalogPointer(event:React.PointerEvent<HTMLButtonElement>,kind:Kind) {
+    if(!event.isPrimary||event.button!==0||isTransport(kind))return;
+    event.preventDefault();
+    if(beltBuildMode)finishBeltBuild();
+    try{event.currentTarget.setPointerCapture(event.pointerId)}catch{}
+    catalogDragKindRef.current=kind;setCatalogDrag(kind);setSelected(kind);setCatalogPreview(null);setSelectionMode(false);setPickedEntity(null);setPlacementPreview(null);
+    setNotice(`${tools.find((tool)=>tool.kind===kind)?.label??"设备"} · 拖到画布网格放置`);
+  }
+
+  function catalogPointAt(clientX:number,clientY:number,kind:Kind) {
+    const gridElement=gridRef.current;if(!gridElement)return null;
+    const layout=EQUIPMENT_LAYOUTS[kind],width=layout?.width??(kind==="powerPole"?2:1),height=layout?.height??(kind==="powerPole"?2:1);
+    const rect=gridElement.getBoundingClientRect();if(clientX<rect.left||clientY<rect.top||clientX>rect.right||clientY>rect.bottom)return null;
+    const x=Math.max(0,Math.min(cols-width,Math.floor((clientX-rect.left)/rect.width*cols))),y=Math.max(0,Math.min(rows-height,Math.floor((clientY-rect.top)/rect.height*rows)));
+    const valid=Array.from({length:width*height},(_,index)=>keyOf(x+index%width,y+Math.floor(index/width))).every((key)=>!grid[key]&&!pipeGrid[key]);
+    return{x,y,valid};
+  }
+
+  function updateCatalogPointer(event:React.PointerEvent<HTMLButtonElement>) {
+    const kind=catalogDragKindRef.current;if(!kind)return;
+    const point=catalogPointAt(event.clientX,event.clientY,kind);if(!point){setCatalogPreview(null);return}const{x,y}=point;setCatalogPreview((current)=>current?.x===x&&current?.y===y?current:{x,y});
+  }
+
+  function finishCatalogPointer(event:React.PointerEvent<HTMLButtonElement>) {
+    const kind=catalogDragKindRef.current;if(!kind)return;
+    event.preventDefault();event.stopPropagation();
+    try{if(event.currentTarget.hasPointerCapture(event.pointerId))event.currentTarget.releasePointerCapture(event.pointerId)}catch{}
+    const point=catalogPointAt(event.clientX,event.clientY,kind);
+    catalogDragKindRef.current=null;setCatalogDrag(null);setCatalogPreview(null);
+    if(point?.valid)placeTool(point.x,point.y,kind);else{setSelected("belt");setNotice(point?"目标占地与现有设备或物流线路冲突":"拖动已取消 · 请在画布网格内释放")}
+  }
+
+  function cancelCatalogPointer() {
+    if(catalogDragKindRef.current===null)return;
+    catalogDragKindRef.current=null;setCatalogDrag(null);setCatalogPreview(null);setSelected("belt");
   }
 
   function save() {
@@ -948,23 +1053,29 @@ export default function Home() {
     setNotice("蓝图已保存到本机");
   }
 
+  function resetSimulation() {
+    setRunning(false);
+    setSimulation(emptySimulationState());
+    setNotice("模拟已重置 · 蓝图、设备配方与仓库取货口配置已保留");
+  }
+
   function load() {
     const saved = localStorage.getItem("endfield-blueprint-v3")??localStorage.getItem("endfield-blueprint-v2")??localStorage.getItem("endfield-blueprint-v1");
     if (saved) {
       const parsed=JSON.parse(saved);
-      if(parsed.grid){const savedSimulation=parsed.simulation??{};setGrid(parsed.grid);setPipeGrid(parsed.pipeGrid??{});setSimulation({tick:savedSimulation.tick??0,inventories:savedSimulation.inventories??{},processes:savedSimulation.processes??{},transits:[],routeCursor:savedSimulation.routeCursor??{},laneReadyAt:{},routeTransfers:savedSimulation.routeTransfers??{}})}else setGrid(parsed);
+      if(parsed.grid){const savedSimulation=parsed.simulation??{};setGrid(parsed.grid);setPipeGrid(parsed.pipeGrid??{});setSimulation({tick:savedSimulation.tick??0,inventories:savedSimulation.inventories??{},processes:savedSimulation.processes??{},transits:[],routeCursor:savedSimulation.routeCursor??{},laneReadyAt:{},routeTransfers:savedSimulation.routeTransfers??{},itemStats:savedSimulation.itemStats??[]})}else setGrid(parsed);
     }
     setNotice(saved ? "已恢复本机蓝图" : "没有找到已保存蓝图");
   }
 
   return (
-    <main data-theme={theme} className="app-shell">
+    <main className="app-shell">
       <header className="topbar">
         <div className="brand-mark">ECS</div>
         <div className="brand-copy"><strong>编辑蓝图</strong><span>ENDFIELD INDUSTRIES / AIC BLUEPRINT</span></div>
         <div className="top-actions">
-          <button className="icon-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} aria-label="切换主题">{theme === "dark" ? "浅色" : "深色"}</button>
           <button onClick={load}>载入</button><button onClick={save}>保存蓝图</button>
+          <button className="reset-action" onClick={resetSimulation}>重置模拟</button>
           <button className={running ? "primary danger" : "primary"} onClick={() => setRunning(!running)}>{running ? "停止模拟" : "开始模拟"}</button>
         </div>
       </header>
@@ -980,7 +1091,7 @@ export default function Home() {
           </div>
           <div className="device-catalog">
             <div className="device-catalog-head"><strong>设备</strong><div className="device-tabs" aria-label="游戏设备分类">{DEVICE_CATEGORIES.map((category)=><button key={category} className={deviceCategory===category?"active":""} onClick={()=>setDeviceCategory(category)}>{category}</button>)}</div></div>
-            <div className="device-list">{tools.filter((tool)=>tool.type==="device"&&(deviceCategory==="全部"||tool.category===deviceCategory)).map((tool)=><button key={tool.kind} draggable className={`tool ${selected===tool.kind&&!selectionMode?"active":""}`} onDragStart={(event)=>{if(beltBuildMode)finishBeltBuild();event.dataTransfer.effectAllowed="copy";event.dataTransfer.setData("text/plain",tool.kind);setCatalogDrag(tool.kind);setSelected(tool.kind);setCatalogPreview(null);setSelectionMode(false);setPickedEntity(null);setPlacementPreview(null);setNotice(`${tool.label} · 拖到画布网格放置`)}} onDragEnd={()=>{setCatalogDrag(null);setCatalogPreview(null)}} onClick={()=>{if(beltBuildMode)finishBeltBuild();setSelected(tool.kind);setSelectionMode(false);setPickedEntity(null);setPlacementPreview(null);setSelectedEntityId(null);setSelectedTransportKey(null)}}><span className={`tool-glyph ${tool.kind}`}>{tool.image?<img src={tool.image} alt=""/>:tool.glyph}</span><span><strong>{tool.label}</strong><small>{tool.desc}</small></span></button>)}{!tools.some((tool)=>tool.type==="device"&&(deviceCategory==="全部"||tool.category===deviceCategory))&&<span className="empty-category">该分类设备将在数据核实后加入</span>}</div>
+            <div className="device-list">{tools.filter((tool)=>tool.type==="device"&&(deviceCategory==="全部"||tool.category===deviceCategory)).map((tool)=><button key={tool.kind} className="tool" onPointerDown={(event)=>beginCatalogPointer(event,tool.kind)} onPointerMove={updateCatalogPointer} onPointerUp={finishCatalogPointer} onPointerCancel={cancelCatalogPointer} aria-label={`拖动添加${tool.label}`}><span className={`tool-glyph ${tool.kind}`}>{tool.image?<img src={tool.image} alt=""/>:tool.glyph}</span><span><strong>{tool.label}</strong><small>{tool.desc}</small></span></button>)}{!tools.some((tool)=>tool.type==="device"&&(deviceCategory==="全部"||tool.category===deviceCategory))&&<span className="empty-category">该分类设备将在数据核实后加入</span>}</div>
           </div>
           <div className="hint"><kbd>E</kbd> 开始 / 完成　<kbd>单击</kbd> 路径点　<kbd>右键</kbd> 取消本条</div>
         </aside>
@@ -1022,23 +1133,25 @@ export default function Home() {
             {inventoryMenuVisible&&selectedEntityId&&selectedEntity&&<aside className="device-menu" role="dialog" aria-label={`${tools.find((tool)=>tool.kind===selectedEntity.kind)?.label??"设备"}库存`}>
               <header><div><small>DEVICE BUFFER</small><strong>{selectedDefinition?.name??tools.find((tool)=>tool.kind===selectedEntity.kind)?.label}</strong></div><button aria-label="关闭设备库存" onClick={()=>setSelectedEntityId(null)}>×</button></header>
               {selectedDefinition&&<div className="device-process"><span>{selectedDefinition.recipe}</span><i><b style={{width:`${machineStates[selectedEntityId]?.progress??0}%`}}/></i><small>{machineStates[selectedEntityId]?.status==="running"?`处理中 · 剩余 ${machineStates[selectedEntityId]?.remaining}s`:machineStates[selectedEntityId]?.status==="blocked"?"产出库存已满 · 已阻塞":"等待处理条件"}</small></div>}
-              <section><div className="inventory-heading"><strong>输入库存</strong><span>{totalInventory(selectedInventory.input)} / {inputCapacityFor(selectedEntity.kind)}</span></div>
-                <div className="inventory-meter"><i style={{width:`${Math.min(100,totalInventory(selectedInventory.input)/inputCapacityFor(selectedEntity.kind)*100)}%`}}/></div>
-                <div className="inventory-list">{selectedInputItemIds.length?selectedInputItemIds.map((itemId)=>{const item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===itemId);return <div key={itemId}><span>{item&&<img src={item.image} alt=""/>}{item?.name??itemId}</span><b>{selectedInventory.input[itemId]??0}</b></div>}):<small>暂无物品</small>}</div>
+              <section className="inventory-section solid"><div className="inventory-heading"><strong>固体输入库存</strong><span>{selectedSolidInputTotal} / {inputCapacityFor(selectedEntity.kind,"belt")}</span></div>
+                <div className="inventory-meter"><i style={{width:`${Math.min(100,selectedSolidInputTotal/inputCapacityFor(selectedEntity.kind,"belt")*100)}%`}}/></div>
+                <div className="inventory-list">{selectedSolidInputItemIds.length?selectedSolidInputItemIds.map((itemId)=>{const item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===itemId);return <div key={itemId}><span>{item&&<img src={item.image} alt=""/>}{item?.name??itemId}</span><b>{selectedInventory.input[itemId]??0}</b></div>}):<small>暂无固体物品</small>}</div>
+              </section>
+              <section className="inventory-section fluid"><div className="inventory-heading"><strong>液体输入库存</strong><span>{selectedFluidInputTotal} / {inputCapacityFor(selectedEntity.kind,"pipe")}</span></div>
+                <div className="inventory-meter fluid"><i style={{width:`${Math.min(100,selectedFluidInputTotal/inputCapacityFor(selectedEntity.kind,"pipe")*100)}%`}}/></div>
+                <div className="inventory-list">{selectedFluidInputItemIds.length?selectedFluidInputItemIds.map((itemId)=>{const item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===itemId);return <div key={itemId}><span>{item&&<img src={item.image} alt=""/>}{item?.name??itemId}</span><b>{selectedInventory.input[itemId]??0}</b></div>}):<small>暂无液体</small>}</div>
               </section>
               <section><div className="inventory-heading"><strong>产出库存</strong><span>{totalInventory(selectedInventory.output)} / {OUTPUT_CAPACITY}</span></div>
                 <div className="inventory-meter output"><i style={{width:`${Math.min(100,totalInventory(selectedInventory.output)/OUTPUT_CAPACITY*100)}%`}}/></div>
                 <div className="inventory-list">{selectedOutputItemIds.length?selectedOutputItemIds.map((itemId)=>{const item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===itemId);return <div key={itemId}><span>{item&&<img src={item.image} alt=""/>}{item?.name??itemId}</span><b>{selectedInventory.output[itemId]??0}</b></div>}):<small>暂无物品</small>}</div>
               </section>
               <section className="inventory-inject"><strong>直接放入库存</strong><select aria-label="库存物品" value={inventoryItemId} onChange={(event)=>setInventoryItemId(event.target.value)}>{INDUSTRIAL_ITEMS.map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</select><input aria-label="放入数量" type="number" min="1" max="60" value={inventoryAmount} onChange={(event)=>setInventoryAmount(Math.max(1,Number(event.target.value)))}/><div><button onClick={()=>addInventory(selectedEntityId,"input",inventoryItemId,inventoryAmount)}>放入输入库存</button><button onClick={()=>addInventory(selectedEntityId,"output",inventoryItemId,inventoryAmount)}>放入产出库存</button></div></section>
-              <footer>{inventoryFullIds.has(selectedEntityId)?"库存已满 · 相连传送带暂停，设备边框标红":"库存可用 · 产物按输出线路轮询分配"}</footer>
+              <footer>{inventoryFullIds.has(selectedEntityId)?"对应介质库存已满 · 相连物流暂停，设备边框标红":"固体与液体输入分别计容 · 产物按输出线路轮询分配"}</footer>
             </aside>}
             <div className="axis axis-y">12<br/>08<br/>04<br/>00</div>
-            <div className={`grid ${panning ? "is-panning" : ""} ${pickedEntity?"is-placing":""} ${running ? "simulation-running" : ""}`} style={{ gridTemplateColumns: `repeat(${cols}, 1fr)`, aspectRatio:`${cols}/${rows}`, transform:`translate(${pan.x}px,${pan.y}px) scale(${zoom})` }}
-              onDragOver={(event)=>{if(!catalogDrag||isTransport(catalogDrag))return;event.preventDefault();event.dataTransfer.dropEffect="copy";const rect=event.currentTarget.getBoundingClientRect(),x=Math.max(0,Math.min(cols-catalogWidth,Math.floor((event.clientX-rect.left)/rect.width*cols))),y=Math.max(0,Math.min(rows-catalogHeight,Math.floor((event.clientY-rect.top)/rect.height*rows)));setCatalogPreview((current)=>current?.x===x&&current?.y===y?current:{x,y})}}
-              onDrop={(event)=>{if(!catalogDrag||isTransport(catalogDrag))return;event.preventDefault();const rect=event.currentTarget.getBoundingClientRect(),x=Math.max(0,Math.min(cols-catalogWidth,Math.floor((event.clientX-rect.left)/rect.width*cols))),y=Math.max(0,Math.min(rows-catalogHeight,Math.floor((event.clientY-rect.top)/rect.height*rows))),valid=Array.from({length:catalogWidth*catalogHeight},(_,index)=>keyOf(x+index%catalogWidth,y+Math.floor(index/catalogWidth))).every((key)=>!grid[key]&&!pipeGrid[key]);if(valid)placeTool(x,y,catalogDrag);else setNotice("目标占地与现有设备或物流线路冲突");setCatalogDrag(null);setCatalogPreview(null)}}
+            <div ref={gridRef} className={`grid ${panning ? "is-panning" : ""} ${pickedEntity?"is-placing":""} ${running ? "simulation-running" : ""}`} style={{ gridTemplateColumns: `repeat(${cols}, 1fr)`, aspectRatio:`${cols}/${rows}`, transform:`translate(${pan.x}px,${pan.y}px) scale(${zoom})` }}
               onMouseMove={(event)=>{const rect=event.currentTarget.getBoundingClientRect();if(beltBuildMode){const x=Math.max(0,Math.min(cols-1,Math.floor((event.clientX-rect.left)/rect.width*cols)));const y=Math.max(0,Math.min(rows-1,Math.floor((event.clientY-rect.top)/rect.height*rows)));setBeltPreviewPoint((current)=>current?.x===x&&current?.y===y?current:{x,y})}if(pickedEntity){const x=Math.max(0,Math.min(cols-pickedWidth,Math.floor((event.clientX-rect.left)/rect.width*cols)));const y=Math.max(0,Math.min(rows-pickedHeight,Math.floor((event.clientY-rect.top)/rect.height*rows)));setPlacementPreview({x,y})}}}
-              onMouseLeave={()=>{setHoveredEntity(null);setBeltPreviewPoint(null);if(catalogDrag)setCatalogPreview(null)}}>
+              onMouseLeave={()=>{setHoveredEntity(null);setBeltPreviewPoint(null)}}>
               {pickedEntity&&placementPreview&&<><span className={`placement-snap ${placementValid?"valid":"invalid"}`} style={{left:`${placementPreview.x/cols*100}%`,top:`${placementPreview.y/rows*100}%`,width:`${pickedWidth/cols*100}%`,height:`${pickedHeight/rows*100}%`}}/><span className="placement-ghost" style={{left:`${placementPreview.x/cols*100}%`,top:`${placementPreview.y/rows*100}%`,width:`${pickedWidth/cols*100}%`,height:`${pickedHeight/rows*100}%`}}>{pickedEntity.sourceType==="entity"&&<>{pickedEntity.image&&<img src={pickedEntity.image} alt=""/>}<strong>{pickedEntity.label}</strong></>}</span></>}
               {catalogDrag&&catalogPreview&&<><span className={`placement-snap catalog-snap ${catalogPlacementValid?"valid":"invalid"}`} style={{left:`${catalogPreview.x/cols*100}%`,top:`${catalogPreview.y/rows*100}%`,width:`${catalogWidth/cols*100}%`,height:`${catalogHeight/rows*100}%`}}/><span className="placement-ghost catalog-ghost" style={{left:`${catalogPreview.x/cols*100}%`,top:`${catalogPreview.y/rows*100}%`,width:`${catalogWidth/cols*100}%`,height:`${catalogHeight/rows*100}%`}}>{tools.find((tool)=>tool.kind===catalogDrag)?.image&&<img src={tools.find((tool)=>tool.kind===catalogDrag)!.image} alt=""/>}<strong>{tools.find((tool)=>tool.kind===catalogDrag)?.label}</strong></span></>}
               {showPowerZones && <svg className="power-overlay" viewBox={`0 0 ${cols} ${rows}`} preserveAspectRatio="none" aria-hidden="true">
@@ -1046,22 +1159,23 @@ export default function Home() {
               </svg>}
               {showPowerZones&&powerZones.map((zone)=><span key={zone.id} className="power-range-label" style={{left:`${Math.max(0,zone.x)/cols*100}%`,top:`${Math.max(0,zone.y)/rows*100}%`}}>供电范围 12×12 · 规划参考</span>)}
               <svg className="transport-overlay" viewBox={`0 0 ${cols} ${rows}`} preserveAspectRatio="none" aria-hidden="true">
-                {displayFlowRoutes.map((route)=>{const connected=connectedFlowRoutes.find((candidate)=>candidate.id===route.id),item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===connected?.itemId);return <g key={route.id} className={`route-track ${route.kind} ${selectedRoute?.id===route.id?"selected-route":""} ${pickedEntity?.sourceType==="route"&&pickedEntity.mode==="move"&&pickedEntity.id===route.id?"picked-route":""}`} style={route.kind==="pipe"&&item?.color?{"--pipe-fluid":item.color} as React.CSSProperties:undefined} data-content={connected?.itemId}>
-                  <path className="track-edge" d={route.path}/><path className="track-fill" d={route.path}/>
-                  {route.cells.map(({x,y,cell})=>{const anchor=arrowAnchor(x,y,cell);return <path key={`${x},${y}`} className="direction-arrow" d="M -.09 -.075 L .11 0 L -.09 .075 Z" transform={`translate(${anchor.x} ${anchor.y}) rotate(${arrowAngle(cell)})`}/>})}
+                {displayFlowRoutes.map((route)=>{const connected=connectedFlowRoutes.find((candidate)=>candidate.id===route.id),item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===connected?.itemId),pipeTransits=route.kind==="pipe"?(transitsByRoute.get(route.id)??[]):[];return <g key={route.id} className={`route-track ${route.kind} ${selectedRoute?.id===route.id?"selected-route":""} ${pickedEntity?.sourceType==="route"&&pickedEntity.mode==="move"&&pickedEntity.id===route.id?"picked-route":""}`} style={route.kind==="pipe"?{"--pipe-fluid":item?.color??"transparent"} as React.CSSProperties:undefined} data-content={connected?.itemId}>
+                  <path className="track-edge" d={route.path}/>
+                  {route.kind==="pipe"?route.cells.map(({x,y,cell},cellIndex)=>{const ratio=pipeFillRatio(pipeTransits,cellIndex,route.cells.length);return <path key={`fluid-${x},${y}`} className="pipe-fluid-segment" d={roundedPath([{x,y,cell}])} strokeWidth={ratio===0?0:.07+ratio*.43} data-fill={ratio.toFixed(2)}/>}):<path className="track-fill" d={route.path}/>}
+                  {route.cells.map(({x,y,cell})=>{const anchor=arrowAnchor(x,y,cell);return <path key={`${x},${y}`} className="direction-arrow" d="M -.065 -.05 L .075 0 L -.065 .05 Z" transform={`translate(${anchor.x} ${anchor.y}) rotate(${arrowAngle(cell)})`}/>})}
                 </g>})}
                 {draftRoute&&<g className={`route-track ${draftRoute.kind} draft-route ${liveDraftRoute?"live-preview":""}`}>
                   <path className="track-edge" d={draftRoute.path}/><path className="track-fill" d={draftRoute.path}/>
-                  {draftRoute.cells.map(({x,y,cell})=>{const anchor=arrowAnchor(x,y,cell);return <path key={`${x},${y}`} className="direction-arrow" d="M -.09 -.075 L .11 0 L -.09 .075 Z" transform={`translate(${anchor.x} ${anchor.y}) rotate(${arrowAngle(cell)})`}/>})}
+                  {draftRoute.cells.map(({x,y,cell})=>{const anchor=arrowAnchor(x,y,cell);return <path key={`${x},${y}`} className="direction-arrow" d="M -.065 -.05 L .075 0 L -.065 .05 Z" transform={`translate(${anchor.x} ${anchor.y}) rotate(${arrowAngle(cell)})`}/>})}
                   {beltDraft?.waypoints.map((point,index)=><circle key={`${point.x},${point.y},${index}`} className="draft-waypoint" cx={point.x+.5} cy={point.y+.5} r=".065"/>)}
                   {liveDraftRoute&&<circle className={`draft-cursor ${snapCandidate?"snapped":""}`} cx={liveDraftRoute.cells[liveDraftRoute.cells.length-1].x+.5} cy={liveDraftRoute.cells[liveDraftRoute.cells.length-1].y+.5} r=".085"/>}
                 </g>}
-                {placementRoute&&<g className={`route-track ${placementRoute.kind} placement-route ${placementValid?"valid":"invalid"}`}><path className="track-edge" d={placementRoute.path}/><path className="track-fill" d={placementRoute.path}/>{placementRoute.cells.map(({x,y,cell})=>{const anchor=arrowAnchor(x,y,cell);return <path key={`${x},${y}`} className="direction-arrow" d="M -.09 -.075 L .11 0 L -.09 .075 Z" transform={`translate(${anchor.x} ${anchor.y}) rotate(${arrowAngle(cell)})`}/>})}</g>}
+                {placementRoute&&<g className={`route-track ${placementRoute.kind} placement-route ${placementValid?"valid":"invalid"}`}><path className="track-edge" d={placementRoute.path}/><path className="track-fill" d={placementRoute.path}/>{placementRoute.cells.map(({x,y,cell})=>{const anchor=arrowAnchor(x,y,cell);return <path key={`${x},${y}`} className="direction-arrow" d="M -.065 -.05 L .075 0 L -.065 .05 Z" transform={`translate(${anchor.x} ${anchor.y}) rotate(${arrowAngle(cell)})`}/>})}</g>}
               </svg>
               {simulation.transits.length>0 && <svg className="flow-overlay" viewBox={`0 0 ${cols} ${rows}`} preserveAspectRatio="none" aria-hidden="true">
                 {connectedFlowRoutes.map((route) => {
                   const transits=transitsByRoute.get(route.id)??[];
-                  if(!transits.length||beltDraft?.replan?.routeId===route.id)return null;
+                  if(route.kind==="pipe"||!transits.length||beltDraft?.replan?.routeId===route.id)return null;
                   const stalled=stalledRouteIds.has(route.id);
                   return <g key={route.id} className={`route-motion ${route.kind} ${stalled?"stalled":""}`}>
                     <CargoRouteSprites transits={transits} route={route} running={running} stalled={stalled}/>
@@ -1111,11 +1225,11 @@ export default function Home() {
                       setSelectionMode(true);return;
                     }
                     if(selectionMode){setSelectedEntityId(null);setSelectedTransportKey(null);setNotice("该位置为空");return}
-                    if(selected==="belt"){setNotice("请先按 E 进入传送带模式");return}
-                    placeTool(x,y);
+                    if(isTransport(selected)){setNotice(`请先按 ${selected==="pipe"?"Q":"E"} 进入${selected==="pipe"?"管道":"传送带"}模式`);return}
+                    setNotice("设备只能从底部目录拖到画布上添加");
                   }} onMouseEnter={() => {if(beltBuildMode)setHoveredEntity(baseCell&&!isTransport(baseCell.kind)?{id:baseCell.id,x,y}:null)}} onMouseLeave={()=>{if(beltBuildMode&&hoveredEntity?.id===baseCell?.id)setHoveredEntity(null)}}
                   onContextMenu={(e) => {e.preventDefault();if(beltBuildMode){cancelBeltDraft();return}deleteAt(x,y,hoverTransport)}}>
-                    {baseCell && !isTransport(baseCell.kind) && <>{baseCell.root && <span style={footprintStyle} className={`cell-glyph root ${!machine ? "compact" : ""} ${baseCell.kind==="powerPole"?"power-pole":""} ${entitySelected?"selected-root":""} ${deviceInventoryFull?"inventory-full":""}`}><b>{machineImage ? <img src={machineImage} alt={tools.find((t) => t.kind === baseCell.kind)?.label}/> : tools.find((t) => t.kind === baseCell.kind)?.image ? <img src={tools.find((t) => t.kind === baseCell.kind)?.image} alt={tools.find((t) => t.kind === baseCell.kind)?.label}/> : tools.find((t) => t.kind === baseCell.kind)?.glyph}</b>{baseCell.kind==="depot"&&<span className="depot-source">{depotItem?<><img src={depotItem.image} alt=""/><small>{depotItem.name}</small></>:<small>未选择物品</small>}</span>}{machine && <span className="machine-overlay"><strong className="machine-name">{machine.name}</strong><span className="machine-recipe">{machine.recipe}</span><small className={status}>状态 · {machine.state}</small><small className={`power-state ${machineState?.powered?"powered":"unpowered"}`}>供电 · {machineState?.powered?"正常":"断开"}</small><em>阻塞 · {machine.blocked}</em><span className="machine-progress"><i><b style={{width:`${processProgress}%`}}/></i><em>{processing ? `${processProgress}% · 剩余 ${remainingSeconds}s` : status==="unpowered" ? "等待供电 · --" : status==="starved" ? "缺少输入 · --" : status==="blocked" ? "输出阻塞 · --" : running ? "周期等待 · --" : "未启动 · --"}</em></span></span>}{baseCell.kind==="powerPole"&&<span className="power-pole-label"><strong>供电桩</strong><small>12 × 12</small></span>}</span>}{cellPorts.map((port)=><span key={port.key} className={`port-marker ${port.type} ${port.transport} side-${port.side} ${snapCandidate?.key===port.key?"snap-target":""} ${isPortConnected(grid,pipeGrid,port)?"connected":""}`} title={`${port.transport==="pipe"?"管道":"物品"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`}>{port.type==="input"?<><i>{port.transport==="pipe"?"P-IN":"IN"} {port.index+1}</i><b>›</b></>:<><b>›</b><i>{port.transport==="pipe"?"P-OUT":"OUT"} {port.index+1}</i></>}</span>)}{baseCell.root && status === "waiting" && <span className="wait-ring" />}</>}
+                    {baseCell && !isTransport(baseCell.kind) && <>{baseCell.root && <span style={footprintStyle} className={`cell-glyph root ${!machine ? "compact" : ""} ${baseCell.kind==="powerPole"?"power-pole":""} ${entitySelected?"selected-root":""} ${deviceInventoryFull?"inventory-full":""}`}><b>{machineImage ? <img src={machineImage} alt={tools.find((t) => t.kind === baseCell.kind)?.label}/> : tools.find((t) => t.kind === baseCell.kind)?.image ? <img src={tools.find((t) => t.kind === baseCell.kind)?.image} alt={tools.find((t) => t.kind === baseCell.kind)?.label}/> : tools.find((t) => t.kind === baseCell.kind)?.glyph}</b>{baseCell.kind==="depot"&&<span className="depot-source">{depotItem?<><img src={depotItem.image} alt=""/><small>{depotItem.name}</small></>:<small>未选择物品</small>}</span>}{machine && <span className="machine-overlay"><strong className="machine-name">{machine.name}</strong><span className="machine-recipe">{machine.recipe}</span><small className={status}>状态 · {machine.state}</small><small className={`power-state ${machineState?.powered?"powered":"unpowered"}`}>供电 · {machineState?.powered?"正常":"断开"}</small><em>阻塞 · {machine.blocked}</em><span className="machine-progress"><i><b style={{width:`${processProgress}%`}}/></i><em>{processing ? `${processProgress}% · 剩余 ${remainingSeconds}s` : status==="unpowered" ? "等待供电 · --" : status==="starved" ? "缺少输入 · --" : status==="blocked" ? "输出阻塞 · --" : running ? "周期等待 · --" : "未启动 · --"}</em></span></span>}{baseCell.kind==="powerPole"&&<span className="power-pole-label"><strong>供电桩</strong><small>12 × 12</small></span>}</span>}{cellPorts.map((port)=><span key={port.key} className={`port-marker ${port.type} ${port.transport} side-${port.side} ${snapCandidate?.key===port.key?"snap-target":""} ${isPortConnected(grid,pipeGrid,port)?"connected":""}`} title={`${port.transport==="pipe"?"液体":"固体"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`} aria-label={`${port.transport==="pipe"?"液体":"固体"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`}><span className="port-icon" aria-hidden="true"><i/><b/></span></span>)}{baseCell.root && status === "waiting" && <span className="wait-ring" />}</>}
                     {transport&&<span className="transport-tooltip"><span>{transport.image?<img src={transport.image} alt=""/>:<i className="empty-item-icon">--</i>}<strong>{transport.kind==="pipe"?"管道":"传送带"} · {transport.name}</strong></span><small>当前流速 {transport.rate}/min · 占用 {transport.cargoCount}/{transport.capacity} 单位</small><small>线路 {routeForCell?.cells.length??0} 格 · 基准运输耗时 {transport.travelSeconds.toFixed(1)}s</small><small>额定吞吐 {transport.kind==="pipe"?PIPE_ITEMS_PER_MINUTE:BELT_ITEMS_PER_MINUTE}/min · {transport.kind==="pipe"?"每格缓存 4 单位":"每格最多 1 件"}</small>{routeForCell&&stalledRouteIds.has(routeForCell.id)&&<small>{transport.targetConnected?"下游库存已满 · 线路满载阻塞":"末端未接输入口 · 线路满载阻塞"}</small>}{transport.connected&&!transport.targetConnected&&!transport.full&&<small>已连接输出口 · 内容将在末端逐格堆积</small>}{!transport.connected&&<small>未连接设备输出口 · 不会生成内容</small>}{secondaryTransport&&<><span className="tooltip-layer"><strong>下层传送带 · {secondaryTransport.name}</strong></span><small>当前流速 {secondaryTransport.rate}/min · 占用 {secondaryTransport.cargoCount}/{secondaryTransport.capacity}</small><small>再次单击可在管道/传送带之间切换选择</small></>}</span>}
                   </button>;
               })}
@@ -1129,9 +1243,22 @@ export default function Home() {
           <div className="panel-heading"><span>生产监控</span><small>LIVE / 02</small></div>
           <div className="metric-grid"><div><small>设备</small><strong>{counts.devices}</strong></div><div><small>物流格</small><strong>{counts.belts}<span> 带</span> / {counts.pipes}<span> 管</span></strong></div><div><small>已供电</small><strong>{productionStates.filter((state)=>state.powered).length}<span> / {productionStates.length}</span></strong></div><div><small>效率</small><strong>{running&&productionStates.length ? Math.round(productionStates.filter((state)=>state.status==="running").length/productionStates.length*100) : "—"}<span>%</span></strong></div></div>
           <div className="section-title"><span>设备状态</span><small>{running ? "SIMULATION ACTIVE" : "SIMULATION PAUSED"}</small></div>
-          {productionStates.map((state,index)=>{const stateText=state.status==="running"?"生产中":state.status==="waiting"?"周期等待":state.status==="starved"?"缺少输入":state.status==="blocked"?"输出阻塞":state.status==="unpowered"?"未供电":"暂停",definition=MACHINE_DEFINITIONS[state.kind],glyph=tools.find((tool)=>tool.kind===state.kind)?.glyph??"MC";return <div key={state.id} className={`machine-card ${state.status==="running"?"good":state.status!=="idle"?"warn":""}`}><div className="machine-icon">{glyph}</div><div><strong>{definition.name} #{String(index+1).padStart(2,"0")}</strong><small>{definition.recipe} · {stateText} · {state.powered?"供电正常":"供电断开"}</small></div><em>{state.status==="running"?`${state.progress}%`:stateText}</em></div>})}
-          <div className="section-title"><span>流量</span><small>PER MINUTE</small></div>
-          {INDUSTRIAL_ITEMS.filter((item)=>itemFlowRates.has(item.id)||["blue-iron-ore","blue-iron-block","iron-parts"].includes(item.id)).slice(0,5).map((item)=>{const rate=itemFlowRates.get(item.id)??0;return <div className="flow-row" key={item.id}><span><img src={item.image} alt=""/>{item.name}</span><b>{rate}</b><i style={{ width:`${Math.min(100,rate/60*100)}%` }} /></div>})}
+          {productionStates.map((state,index)=>{const stateText=state.status==="running"?"生产中":state.status==="waiting"?"周期等待":state.status==="starved"?"缺少输入":state.status==="blocked"?"输出阻塞":state.status==="unpowered"?"未供电":"暂停",definition=MACHINE_DEFINITIONS[state.kind];return <div key={state.id} className={`machine-card ${state.status==="running"?"good":state.status!=="idle"?"warn":""}`}><div className="machine-icon"><img src={definition.image} alt=""/></div><div><strong>{definition.name} #{String(index+1).padStart(2,"0")}</strong><small>{definition.recipe} · {stateText} · {state.powered?"供电正常":"供电断开"}</small></div><em>{state.status==="running"?`${state.progress}%`:stateText}</em></div>})}
+          <div className="section-title"><span>产销统计</span><small>ROLLING 60 SECONDS</small></div>
+          <section className="production-stats" aria-label="产线物品产出量与消耗量统计">
+            {involvedStatsItems.length&&selectedStatsItem?<>
+              <label className="stat-selector"><span><img src={selectedStatsItem.image} alt=""/>统计物品</span><select value={selectedStatsItem.id} onChange={(event)=>setSelectedStatsItemId(event.target.value)}>{involvedStatsItems.map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+              <div className="stat-chart-head"><strong>{selectedStatsItem.name}</strong><small>5 秒滚动平均 · 单位/min</small></div>
+              <svg className="stat-chart" viewBox="0 0 240 82" role="img" aria-label={`${selectedStatsItem.name}产出与消耗折线图`}>
+                <path className="stat-grid-line" d="M 0 1 H 240 M 0 41 H 240 M 0 81 H 240"/>
+                <path className="stat-line produced" d={statsChart.producedPath}/>
+                <path className="stat-line consumed" d={statsChart.consumedPath}/>
+              </svg>
+              <div className="stat-legend"><span className="produced"><i/>产出 <b>{Math.round(statsChart.produced.at(-1)??0)}/min</b></span><span className="consumed"><i/>消耗 <b>{Math.round(statsChart.consumed.at(-1)??0)}/min</b></span></div>
+              <div className="stat-totals"><span>最近 60 秒产出 <b>{statsChart.producedTotal}</b></span><span>消耗 <b>{statsChart.consumedTotal}</b></span></div>
+              <small className="stat-note">仓库存货口收货仅计库存转移，不计消耗</small>
+            </>:<div className="stat-empty">放置并连接生产设备后显示产销历史</div>}
+          </section>
           <div className="clock-card"><span>模拟时钟</span><strong>{String(Math.floor(elapsedSeconds/60)).padStart(2,"0")}:{String(elapsedSeconds%60).padStart(2,"0")}</strong><small>× 1.0　·　每 250ms 提交模拟快照</small></div>
         </aside>
       </section>
