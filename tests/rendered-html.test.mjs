@@ -120,6 +120,13 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(page, /kind: "powerPole"[\s\S]*?2×2 · 供电范围 12×12/);
   assert.match(page, /gearAssembler:\{width:4,height:6,inputs:edgePorts\(6,2,0\),outputs:edgePorts\(6,0,3\)\}/);
   assert.match(page, /gearAssembler:\{name:"装备原件机"[\s\S]*?recipe\("amethyst-component"[\s\S]*?,10\)/);
+  assert.match(page, /gearAssembler:\{name:"装备原件机"[\s\S]*?recipe\("ferrium-component","蓝铁装备原件"[\s\S]*?,10\)/);
+  assert.match(page, /gearAssembler:\{name:"装备原件机"[\s\S]*?recipe\("high-crystal-component","高晶装备原件"[\s\S]*?,10\)/);
+  assert.match(page, /gearAssembler:\{name:"装备原件机"[\s\S]*?recipe\("xiranite-component","息壤装备原件"[\s\S]*?,10\)/);
+  assert.match(page, /gearAssembler:\{name:"装备原件机"[\s\S]*?recipe\("cuprium-component","赤铜装备原件"[\s\S]*?,10\)/);
+  assert.match(page, /gearAssembler:\{name:"装备原件机"[\s\S]*?recipe\("hetonite-component","赫铜装备原件"[\s\S]*?,10\)/);
+  assert.match(page, /const recipeRateText=/);
+  assert.match(page, /额定流量 · \{recipeRateText\(selectedRecipe\)\}/);
   assert.match(page, /refiner:\{name:"精炼炉"[\s\S]*?recipe\("ferrium-block"[\s\S]*?,2\)/);
   assert.match(page, /fitter:\{name:"配件机"[\s\S]*?recipe\("ferrium-part"[\s\S]*?,2\)/);
   assert.match(page, /status:[\s\S]*?"unpowered"/);
@@ -266,6 +273,7 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(css, /\.machine-card \.machine-icon img/);
   assert.match(css, /\.content-placeholder\{/);
   assert.match(css, /\.flow-placeholder\{/);
+  assert.match(css, /\.recipe-control>\.recipe-rate\{/);
   assert.doesNotMatch(css, /data-theme="dark"/);
   assert.match(timing, /BELT_ITEMS_PER_MINUTE = 30/);
   assert.match(timing, /PIPE_ITEMS_PER_MINUTE = 120/);

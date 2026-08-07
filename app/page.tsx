@@ -86,6 +86,16 @@ const INDUSTRIAL_ITEMS:IndustrialItem[] = [
   {id:"steel-block",name:"钢块",category:"工业产物",image:"/assets/items/steel-block.webp"},
   {id:"crystal-shell",name:"晶体外壳",category:"工业产物",image:"/assets/items/crystal-shell.webp"},
   {id:"purple-equipment-component",name:"紫晶装备原件",category:"工业产物",image:"/assets/items/purple-equipment-component.webp"},
+  {id:"blue-iron-equipment-component",name:"蓝铁装备原件",category:"工业产物"},
+  {id:"dense-crystal",name:"密制晶体",category:"工业产物"},
+  {id:"high-crystal-fiber",name:"高晶纤维",category:"工业产物"},
+  {id:"high-crystal-equipment-component",name:"高晶装备原件",category:"工业产物"},
+  {id:"xiranite-equipment-component",name:"息壤装备原件",category:"工业产物"},
+  {id:"red-copper-parts",name:"赤铜零件",category:"工业产物"},
+  {id:"red-copper-equipment-component",name:"赤铜装备原件",category:"工业产物"},
+  {id:"hetonite-parts",name:"赫铜零件",category:"工业产物"},
+  {id:"heavy-xiranite",name:"重息壤",category:"工业产物"},
+  {id:"hetonite-equipment-component",name:"赫铜装备原件",category:"工业产物"},
   {id:"blue-iron-bottle",name:"蓝铁瓶",category:"工业产物",image:"/assets/items/blue-iron-bottle.webp"},
   {id:"purple-crystal-bottle",name:"紫晶质瓶",category:"工业产物",image:"/assets/items/purple-crystal-bottle.webp"},
   {id:"water-filled-blue-iron-bottle",name:"蓝铁瓶（清水）",category:"工业产物",image:"/assets/items/water-filled-blue-iron-bottle.webp"},
@@ -196,6 +206,11 @@ const MACHINE_DEFINITIONS:Record<ProductionKind,MachineDefinition> = {
   ]},
   gearAssembler:{name:"装备原件机",width:4,height:6,image:"/assets/machines/gear-assembler.webp",powerUsage:10,recipes:[
     recipe("amethyst-component","紫晶装备原件","solid",[{itemId:"crystal-shell",amount:5},{itemId:"purple-crystal-fiber",amount:5}],[{itemId:"purple-equipment-component",amount:1}],10),
+    recipe("ferrium-component","蓝铁装备原件","solid",[{itemId:"crystal-shell",amount:10},{itemId:"blue-iron-block",amount:10}],[{itemId:"blue-iron-equipment-component",amount:1}],10),
+    recipe("high-crystal-component","高晶装备原件","solid",[{itemId:"dense-crystal",amount:10},{itemId:"high-crystal-fiber",amount:10}],[{itemId:"high-crystal-equipment-component",amount:1}],10),
+    recipe("xiranite-component","息壤装备原件","solid",[{itemId:"dense-crystal",amount:10},{itemId:"xiranite",amount:10}],[{itemId:"xiranite-equipment-component",amount:1}],10),
+    recipe("cuprium-component","赤铜装备原件","solid",[{itemId:"red-copper-parts",amount:10},{itemId:"xiranite",amount:10}],[{itemId:"red-copper-equipment-component",amount:1}],10),
+    recipe("hetonite-component","赫铜装备原件","solid",[{itemId:"hetonite-parts",amount:2},{itemId:"heavy-xiranite",amount:2}],[{itemId:"hetonite-equipment-component",amount:1}],10),
   ]},
   waterPump:{name:"水泵",width:2,height:2,image:"/assets/machines/water-pump.svg",powerUsage:5,recipes:[
     recipe("clean-water","清水","fluid",[],[{itemId:"clean-water",amount:1}],1),
@@ -205,6 +220,12 @@ const MACHINE_DEFINITIONS:Record<ProductionKind,MachineDefinition> = {
 const activeRecipe=(definition:MachineDefinition,recipeId?:string)=>definition.recipes.find((candidate)=>candidate.id===recipeId)??definition.recipes[0];
 const itemName=(itemId:string)=>INDUSTRIAL_ITEMS.find((item)=>item.id===itemId)?.name??itemId;
 const recipeText=(current:MachineRecipe)=>`${current.inputs.length?current.inputs.map((input)=>`${itemName(input.itemId)} ×${input.amount}`).join(" + "):"环境输入"} → ${current.outputs.length?current.outputs.map((output)=>`${itemName(output.itemId)} ×${output.amount}`).join(" + "):"无害化处理"}`;
+const formatRate=(rate:number)=>Number.isInteger(rate)?String(rate):rate.toFixed(1).replace(/\.0$/,"");
+const recipeRateText=(current:MachineRecipe)=>{
+  const cyclesPerMinute=60/(current.durationTicks/SIM_TICKS_PER_SECOND);
+  const side=(quantities:RecipeQuantity[],fallback:string)=>quantities.length?quantities.map((quantity)=>`${itemName(quantity.itemId)} ${formatRate(quantity.amount*cyclesPerMinute)}/min`).join(" + "):fallback;
+  return `${side(current.inputs,"环境输入")} → ${side(current.outputs,"无返还物")}`;
+};
 
 const edgePorts=(height:number,side:Direction,x:number):PortSpec[]=>Array.from({length:height},(_,y)=>({x,y,side}));
 
@@ -1300,7 +1321,7 @@ export default function Home() {
             {inventoryMenuVisible&&selectedEntityId&&selectedEntity&&<aside className="device-menu" role="dialog" aria-label={`${tools.find((tool)=>tool.kind===selectedEntity.kind)?.label??"设备"}库存`}>
               <header><div><small>DEVICE BUFFER</small><strong>{selectedDefinition?.name??tools.find((tool)=>tool.kind===selectedEntity.kind)?.label}</strong></div><button aria-label="关闭设备库存" onClick={()=>setSelectedEntityId(null)}>×</button></header>
               {selectedDefinition&&selectedRecipe&&<>
-                <section className="recipe-control"><div className="recipe-heading"><strong>工作模式与配方</strong><span>{selectedDefinition.powerUsage} 电力</span></div>{selectedModes.length>1&&<div className="mode-switch" role="group" aria-label="设备工作模式">{selectedModes.map((mode)=><button key={mode} className={selectedRecipe.mode===mode?"active":""} onClick={()=>setMachineRecipe(selectedEntityId,selectedDefinition.recipes.find((candidate)=>candidate.mode===mode)!.id)}>{modeLabel(mode)}</button>)}</div>}<label><span>当前配方</span><select aria-label="当前处理配方" value={selectedRecipe.id} onChange={(event)=>setMachineRecipe(selectedEntityId,event.target.value)}>{selectedDefinition.recipes.filter((candidate)=>candidate.mode===selectedRecipe.mode).map((candidate)=><option key={candidate.id} value={candidate.id}>{candidate.name} · {candidate.durationTicks/SIM_TICKS_PER_SECOND}s</option>)}</select></label><small>切换模式或配方会清零当前加工周期，输入与产出库存保持不变。</small></section>
+                <section className="recipe-control"><div className="recipe-heading"><strong>工作模式与配方</strong><span>{selectedDefinition.powerUsage} 电力</span></div>{selectedModes.length>1&&<div className="mode-switch" role="group" aria-label="设备工作模式">{selectedModes.map((mode)=><button key={mode} className={selectedRecipe.mode===mode?"active":""} onClick={()=>setMachineRecipe(selectedEntityId,selectedDefinition.recipes.find((candidate)=>candidate.mode===mode)!.id)}>{modeLabel(mode)}</button>)}</div>}<label><span>当前配方</span><select aria-label="当前处理配方" value={selectedRecipe.id} onChange={(event)=>setMachineRecipe(selectedEntityId,event.target.value)}>{selectedDefinition.recipes.filter((candidate)=>candidate.mode===selectedRecipe.mode).map((candidate)=><option key={candidate.id} value={candidate.id}>{candidate.name} · {candidate.durationTicks/SIM_TICKS_PER_SECOND}s</option>)}</select></label><small className="recipe-rate">额定流量 · {recipeRateText(selectedRecipe)}</small><small>切换模式或配方会清零当前加工周期，输入与产出库存保持不变。</small></section>
                 <div className="device-process"><span>{recipeText(selectedRecipe)}</span><i><b style={{width:`${machineStates[selectedEntityId]?.progress??0}%`}}/></i><small>{machineStates[selectedEntityId]?.status==="running"?`处理中 · 剩余 ${machineStates[selectedEntityId]?.remaining}s`:machineStates[selectedEntityId]?.status==="blocked"?"产出库存已满 · 已阻塞":"等待处理条件"}</small></div>
               </>}
               <section className="inventory-section solid"><div className="inventory-heading"><strong>固体输入库存</strong><span>{selectedSolidInputTotal} / {inputCapacityFor(selectedEntity.kind,"belt")}</span></div>
