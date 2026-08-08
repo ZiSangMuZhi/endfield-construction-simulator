@@ -2067,7 +2067,7 @@ export default function Home() {
             <p>工具</p>
             {tools.filter((tool)=>tool.type==="tool").map((tool)=><button key={tool.kind} className={`tool ${selected===tool.kind&&!selectionMode&&beltBuildMode===tool.kind?"active":""}`} onClick={()=>{const kind=tool.kind as TransportKind;if(beltBuildMode)finishBeltBuild();else activateBeltMode(kind)}}><span className={`tool-glyph ${tool.kind}`}><AssetThumb src={tool.image} label={tool.label}/></span><span><strong>{tool.label}</strong><small>{tool.desc}</small></span><kbd className="tool-key">{tool.kind==="pipe"?"Q":"E"}</kbd></button>)}
             <button className={`tool selection-tool ${marqueeMode ? "active" : ""}`} onClick={toggleMarqueeMode}>
-              <span className="tool-glyph">SEL</span><span><strong>框选 / 编辑</strong><small>X 开关 · 拖动选择区域</small></span><kbd className="tool-key">X</kbd>
+              <span className="tool-glyph selection"><AssetThumb src="/assets/ui/selection-tool.svg" label="框选编辑"/></span><span><strong>框选 / 编辑</strong><small>X 开关 · 拖动选择区域</small></span><kbd className="tool-key">X</kbd>
             </button>
           </div>
           <div className="device-catalog">

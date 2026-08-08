@@ -406,6 +406,8 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(css, /\.flow-node\{/);
   assert.match(css, /\.flow-link\.pipe path/);
   assert.match(css, /\.route-track\.draft-route\.invalid/);
+  assert.match(page, /\/assets\/ui\/selection-tool\.svg/);
+  assert.match(css, /\.editor-tools \.tool-glyph img\{[^}]*filter:none/);
   assert.doesNotMatch(css, /data-theme="dark"/);
   assert.match(timing, /BELT_ITEMS_PER_MINUTE = 30/);
   assert.match(timing, /PIPE_ITEMS_PER_MINUTE = 120/);
@@ -455,5 +457,8 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   await access(new URL("../public/assets/items/industrial-explosive.webp", import.meta.url));
   await access(new URL("../public/assets/items/low-capacity-valley-battery.webp", import.meta.url));
   await access(new URL("../public/assets/items/sewage.svg", import.meta.url));
+  await access(new URL("../public/assets/ui/belt-tool.svg", import.meta.url));
+  await access(new URL("../public/assets/ui/pipe-tool.svg", import.meta.url));
+  await access(new URL("../public/assets/ui/selection-tool.svg", import.meta.url));
   await access(new URL("../public/og.png", import.meta.url));
 });

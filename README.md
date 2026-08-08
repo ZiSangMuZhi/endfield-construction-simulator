@@ -2,7 +2,7 @@
 
 一个轻量、离线优先的《明日方舟：终末地》基地布局与生产模拟工具。当前版本是可操作的 Alpha 原型。
 
-在线使用：[GitHub Pages](https://zisangmuzhi.github.io/endfield-construction-simulator/)。静态版本发布在 `gh-pages` 分支，由 GitHub Pages 直接托管。
+在线使用：[GitHub Pages](https://zisangmuzhi.github.io/endfield-construction-simulator/)。当前公开版本：[v0.1.0](https://github.com/ZiSangMuZhi/endfield-construction-simulator/releases/tag/v0.1.0)。静态版本发布在 `gh-pages` 分支，由 GitHub Pages 直接托管。
 
 ## 已实现
 
