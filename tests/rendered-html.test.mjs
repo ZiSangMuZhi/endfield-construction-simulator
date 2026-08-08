@@ -193,6 +193,8 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.doesNotMatch(page, /animateMotion/);
   assert.match(page, /key === "delete"\|\|key === "backspace"/);
   assert.match(page, /DEVICE_CATEGORIES:DeviceCategory\[\]=\["全部","资源开采","仓储存取","基础生产","合成制造","电力供应","功能设备","战斗辅助","种植调配"\]/);
+  assert.match(page, /kind: "seedPicker".*category:"种植调配"/);
+  assert.match(page, /kind: "planter".*category:"种植调配"/);
   assert.match(page, /仓库取货口输出物品/);
   assert.doesNotMatch(page, /draggable className/);
   assert.match(page, /beginCatalogPointer/);
@@ -330,6 +332,14 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(css, /\.top-actions \.clear-action/);
   assert.match(page, /function toggleMarqueeMode\(\)/);
   assert.match(page, /function prepareGroupPlacement/);
+  assert.match(page, /setPickedEntity\(null\);setMarqueeMode\(false\);setMarquee\(null\)/);
+  const groupPlacementBranch=page.indexOf("if (pickedGroup) { placePickedGroup(x,y); return; }");
+  const marqueeGuard=page.indexOf("if(marqueeMode)return",groupPlacementBranch);
+  assert.ok(groupPlacementBranch>=0&&marqueeGuard>groupPlacementBranch);
+  assert.match(page, /const DEFAULT_COLS = 32/);
+  assert.match(page, /const DEFAULT_ROWS = 32/);
+  assert.match(page, /const MAX_CANVAS_SIZE = 48/);
+  assert.match(page, /JSON\.stringify\(\{cols,rows,grid,pipeGrid/);
   assert.match(page, /function rotateGroupSelection/);
   assert.match(page, /function deleteGroupSelection/);
   assert.match(page, /onPointerDown=\{startMarquee\}/);

@@ -19,8 +19,9 @@ type OutputFilters = { solid?:string; pipe0?:string; pipe1?:string };
 type Cell = { kind: Kind; rotation: Direction; entry?: Direction; id: string; root?: boolean; partX?: number; partY?: number; size?: number; width?: number; height?: number; content?: PipeContent; itemId?: string; recipeId?:string; pairedEntityId?:string; outputFilters?:OutputFilters; autoMultiRecipeUnblock?:boolean };
 type Grid = Record<string, Cell>;
 
-const DEFAULT_COLS = 18;
-const DEFAULT_ROWS = 12;
+const DEFAULT_COLS = 32;
+const DEFAULT_ROWS = 32;
+const MAX_CANVAS_SIZE = 48;
 const keyOf = (x: number, y: number) => `${x},${y}`;
 const DELTAS: Record<Direction, [number, number]> = { 0:[1,0], 1:[0,1], 2:[-1,0], 3:[0,-1] };
 const opposite = (direction: Direction) => ((direction + 2) % 4) as Direction;
@@ -704,8 +705,8 @@ const tools: { kind: Kind; label: string; type:"tool"|"device"; category?:Device
   { kind: "crusher", label: "粉碎机", type:"device", category:"基础生产", glyph: "CR", desc: "3×3 · 固体粉碎", image:"/assets/machines/crusher.webp" },
   { kind: "fitter", label: "配件机", type:"device", category:"基础生产", glyph: "F", desc: "金属块 → 零件", image:"/assets/machines/assembler.webp" },
   { kind: "molder", label: "塑形机", type:"device", category:"基础生产", glyph: "MO", desc: "3×3 · 固体/气体模式", image:"/assets/machines/molder.webp" },
-  { kind: "seedPicker", label: "采种机", type:"device", category:"基础生产", glyph: "SP", desc: "5×5 · 植物采种", image:"/assets/machines/seed-picker.webp" },
-  { kind: "planter", label: "种植机", type:"device", category:"基础生产", glyph: "PL", desc: "5×5 · 固体/液体模式", image:"/assets/machines/planter.webp" },
+  { kind: "seedPicker", label: "采种机", type:"device", category:"种植调配", glyph: "SP", desc: "5×5 · 植物采种", image:"/assets/machines/seed-picker.webp" },
+  { kind: "planter", label: "种植机", type:"device", category:"种植调配", glyph: "PL", desc: "5×5 · 固体/液体模式", image:"/assets/machines/planter.webp" },
   { kind: "gearAssembler", label: "装备原件机", type:"device", category:"合成制造", glyph: "GA", desc: "6×4 · 双物料合成", image:"/assets/machines/gear-assembler.webp" },
   { kind: "filler", label: "灌装机", type:"device", category:"合成制造", glyph: "FI", desc: "4×6 · 固体与流体输入", image:"/assets/machines/filler.webp" },
   { kind: "dismantler", label: "拆解机", type:"device", category:"合成制造", glyph: "DM", desc: "4×6 · 容器与介质拆解", image:"/assets/machines/dismantler.webp" },
@@ -1444,7 +1445,7 @@ export default function Home() {
     const cells:GroupCell[]=[...groupSelection.gridKeys.map((sourceKey)=>{const [x,y]=sourceKey.split(",").map(Number);return{layer:"grid" as const,sourceKey,dx:x-groupSelection.minX,dy:y-groupSelection.minY,cell:grid[sourceKey]}}),...groupSelection.pipeKeys.map((sourceKey)=>{const [x,y]=sourceKey.split(",").map(Number);return{layer:"pipe" as const,sourceKey,dx:x-groupSelection.minX,dy:y-groupSelection.minY,cell:pipeGrid[sourceKey]}})].filter((entry)=>Boolean(entry.cell));
     if(!cells.length)return;
     setPickedGroup({mode,sourceGridKeys:groupSelection.gridKeys,sourcePipeKeys:groupSelection.pipeKeys,cells,label:`${groupSelection.entityIds.length} 个设备/部件 · ${cells.length} 个网格对象`});
-    setPlacementPreview({x:groupSelection.minX,y:groupSelection.minY});setPickedEntity(null);
+    setPlacementPreview({x:groupSelection.minX,y:groupSelection.minY});setPickedEntity(null);setMarqueeMode(false);setMarquee(null);
     setNotice(mode==="move"?"整组移动 · 选择内容随鼠标吸附，单击放下":"整组复制 · 副本的库存和处理进度独立清空");
   }
 
@@ -1909,7 +1910,7 @@ export default function Home() {
   }
 
   function save() {
-    localStorage.setItem("endfield-blueprint-v3", JSON.stringify({grid,pipeGrid,simulation:{...simulation,transits:[],laneReadyAt:{}}}));
+    localStorage.setItem("endfield-blueprint-v3", JSON.stringify({cols,rows,grid,pipeGrid,simulation:{...simulation,transits:[],laneReadyAt:{}}}));
     setNotice("蓝图已保存到本机");
   }
 
@@ -1932,7 +1933,7 @@ export default function Home() {
     const saved = localStorage.getItem("endfield-blueprint-v3")??localStorage.getItem("endfield-blueprint-v2")??localStorage.getItem("endfield-blueprint-v1");
     if (saved) {
       const parsed=JSON.parse(saved);
-      if(parsed.grid){const savedSimulation=parsed.simulation??{};setGrid(parsed.grid);setPipeGrid(parsed.pipeGrid??{});setSimulation({tick:savedSimulation.tick??0,inventories:savedSimulation.inventories??{},processes:savedSimulation.processes??{},transits:[],routeCursor:savedSimulation.routeCursor??{},recipeCursor:savedSimulation.recipeCursor??{},laneReadyAt:{},routeTransfers:savedSimulation.routeTransfers??{},itemStats:savedSimulation.itemStats??[]})}else setGrid(parsed);
+      if(parsed.grid){const savedSimulation=parsed.simulation??{};if(Number.isFinite(parsed.cols))setCols(Math.max(12,Math.min(MAX_CANVAS_SIZE,parsed.cols)));if(Number.isFinite(parsed.rows))setRows(Math.max(8,Math.min(MAX_CANVAS_SIZE,parsed.rows)));setGrid(parsed.grid);setPipeGrid(parsed.pipeGrid??{});setSimulation({tick:savedSimulation.tick??0,inventories:savedSimulation.inventories??{},processes:savedSimulation.processes??{},transits:[],routeCursor:savedSimulation.routeCursor??{},recipeCursor:savedSimulation.recipeCursor??{},laneReadyAt:{},routeTransfers:savedSimulation.routeTransfers??{},itemStats:savedSimulation.itemStats??[]})}else setGrid(parsed);
     }
     setNotice(saved ? "已恢复本机蓝图" : "没有找到已保存蓝图");
   }
@@ -1975,7 +1976,7 @@ export default function Home() {
               <details className="settings"><summary>画布设置</summary><div className="settings-popover">
                 <label><span>网格对比度 <b>{Math.round(gridOpacity*100)}%</b></span><input type="range" min="0.03" max="0.35" step="0.01" value={gridOpacity} onChange={e=>setGridOpacity(Number(e.target.value))}/></label>
                 <label><span>缩放 <b>{Math.round(zoom*100)}%</b></span><input type="range" min="0.55" max="1.7" step="0.05" value={zoom} onChange={e=>setZoom(Number(e.target.value))}/></label>
-                <div className="size-inputs"><label>列数<input type="number" min="12" max="32" value={cols} onChange={e=>setCols(Math.max(12,Math.min(32,Number(e.target.value))))}/></label><label>行数<input type="number" min="8" max="24" value={rows} onChange={e=>setRows(Math.max(8,Math.min(24,Number(e.target.value))))}/></label></div>
+                <div className="size-inputs"><label>列数<input type="number" min="12" max={MAX_CANVAS_SIZE} value={cols} onChange={e=>setCols(Math.max(12,Math.min(MAX_CANVAS_SIZE,Number(e.target.value))))}/></label><label>行数<input type="number" min="8" max={MAX_CANVAS_SIZE} value={rows} onChange={e=>setRows(Math.max(8,Math.min(MAX_CANVAS_SIZE,Number(e.target.value))))}/></label></div>
                 <button onClick={()=>{setPan({x:0,y:0});setZoom(1)}}>重置视图</button><small>滚轮缩放 · 按住滚轮拖动画布</small>
               </div></details></>:<span className="flow-summary">{flowGraph.nodes.length} 节点 · {flowGraph.edges.length} 连接</span>}
             </div>
@@ -2111,10 +2112,10 @@ export default function Home() {
                   onLostPointerCapture={(event)=>{if(radialGestureRef.current?.pointerId===event.pointerId)cancelRadialMenu("轮盘操作已取消 · 设备保持选中")}}
                   onMouseDown={(e) => {
                     if(e.button===1||e.altKey)return;
-                    if(marqueeMode)return;
-                    if(beltBuildMode){addBeltWaypoint(x,y,baseCell&&!isTransport(baseCell.kind)?baseCell.id:undefined);return}
                     if (pickedGroup) { placePickedGroup(x,y); return; }
+                    if(beltBuildMode){addBeltWaypoint(x,y,baseCell&&!isTransport(baseCell.kind)?baseCell.id:undefined);return}
                     if (pickedEntity) { placePicked(x,y); return; }
+                    if(marqueeMode)return;
                     if (baseCell&&!isTransport(baseCell.kind)) {setGroupSelection(null);setSelectedEntityId(baseCell.id);setSelectedTransportKey(null);setNotice("已选中设备 · 库存与处理状态已打开");setSelectionMode(true);return}
                     const crossingKind:TransportKind|undefined=pipeCell&&baseCell?.kind==="belt"?(selectedTransportKey===key&&selectedTransportKind==="pipe"?"belt":"pipe"):undefined;
                     const selectedFlow=crossingKind==="pipe"?pipeCell:crossingKind==="belt"?baseCell:pipeCell??(baseCell?.kind==="belt"?baseCell:undefined);
