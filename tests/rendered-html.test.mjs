@@ -171,6 +171,13 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(page, /acidEnvironmentZones[\s\S]*?entity\.kind!=="gasReactor"\|\|acidEnvironmentZones\.some/);
   assert.match(page, /const PIPE_TRANSFER_DEVICES\s*=\s*new Set<Kind>/);
   assert.match(page, /function setUndergroundPair\(entityId:string,targetId:string\)/);
+  assert.match(page, /const UNDERGROUND_OUTLETS=new Set<Kind>/);
+  assert.match(page, /sourceRatePerMinute\?:number/);
+  assert.match(page, /advanceUndergroundSourceCredit\(sourceCredit,undergroundSourceRate,SIM_TICKS_PER_SECOND,PIPE_ITEMS_PER_MINUTE\)/);
+  assert.match(page, /infiniteUndergroundSource\?ordered\.slice\(0,1\):ordered/);
+  assert.match(page, /aria-label="暗管出口源流速"/);
+  assert.match(page, /!selectedUndergroundOutlet&&<section className="inventory-inject">/);
+  assert.match(page, /selectedInventoryItems=selectedPipeTransfer\?INDUSTRIAL_ITEMS\.filter/);
   assert.match(page, /const machineImageFor=/);
   assert.match(page, /previous\.transits\.filter/);
   assert.match(page, /stalledRouteIds/);
@@ -257,7 +264,7 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(page, /type ItemStatSample/);
   assert.match(page, /producedThisTick/);
   assert.match(page, /consumedThisTick/);
-  assert.match(page, /if\(sourceKind==="depot"\)addQuantity\(producedThisTick/);
+  assert.match(page, /if\(sourceKind==="depot"\|\|infiniteUndergroundSource\)addQuantity\(producedThisTick/);
   assert.match(page, /Storage-port delivery is inventory transfer, not consumption/);
   assert.match(page, /className="stat-line produced"/);
   assert.match(page, /className="stat-line consumed"/);
