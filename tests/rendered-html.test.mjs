@@ -355,7 +355,7 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(page, /const bridgeForwardRoutes=useMemo/);
   assert.match(page, /const outgoing=pairedBridgeOutput\(incoming,connectedFlowRoutes\)/);
   assert.match(page, /route\.targetPort&&!isBridge\(route\.targetPort\.entityKind\)\?ensureInventory/);
-  assert.match(page, /isBridge\(route\.sourcePort\.entityKind\)\|\|\(!route\.itemId/);
+  assert.match(page, /isBridge\(route\.sourcePort\.entityKind\)\|\|\(!route\.itemId&&route\.sourcePort\.entityKind==="depot"\)/);
   assert.match(page, /activeByRoute\.set\(outgoing\.id,\[\.\.\.outgoingLane,\{\.\.\.leader,routeId:outgoing\.id,position:0,previousPosition:0\}\]\)/);
   assert.match(page, /!isBridge\(selectedEntity\.kind\)/);
   assert.match(page, /if\(route\.direct\)return/);
@@ -363,6 +363,16 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(page, /isPortConnected\(grid,pipeGrid,port,directlyConnectedPortKeys\)/);
   assert.match(css, /\.marquee-box/);
   assert.match(css, /\.inventory-collect/);
+  assert.match(page, /"protocolStash"/);
+  assert.match(page, /protocolStash:\{width:3,height:3,inputs:edgePorts\(3,2,0\),outputs:edgePorts\(3,0,2\)\}/);
+  assert.match(page, /label: "协议储存箱"[\s\S]*?desc: "3×3 · 6 槽 · 无线回仓"/);
+  assert.match(page, /function setProtocolStashMode\(entityId:string,mode:ProtocolStashMode\)/);
+  assert.match(page, /advanceProtocolStash\(inventory\.input,processes\[processKey\]\?\?0/);
+  assert.match(page, /wireless:\(entity\.cell\.protocolStashMode\?\?"wireless"\)==="wireless"/);
+  assert.match(page, /transferTicks:secondsToTicks\(PROTOCOL_STASH_TRANSFER_SECONDS\)/);
+  assert.match(page, /aria-label="协议储存箱工作模式"/);
+  assert.match(page, /每 5 秒将全部存储物品回传基地仓库/);
+  assert.match(css, /\.protocol-transfer-meter/);
   assert.match(css, /\.cell\.logisticsBridge \.port-marker/);
   assert.match(page, /const \[canvasView,setCanvasView\]=useState<CanvasView>\("blueprint"\)/);
   assert.match(page, /className="flow-diagram"/);

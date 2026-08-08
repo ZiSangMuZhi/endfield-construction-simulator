@@ -7,16 +7,18 @@ import { bridgePortsPair, pairedBridgeOutput } from "../lib/bridge-routing";
 import { RADIAL_CONFIRM_DELAY_MS, RADIAL_HOLD_DELAY_MS, RADIAL_PREOPEN_TOLERANCE_PX, RadialAction, radialSelection } from "../lib/radial-menu";
 import { occupiedSharedSlots, sharedBufferAfterRecipe, sharedBufferCanAccept, sharedBufferWithOutputs } from "../lib/machine-buffer.mjs";
 import { selectSnapPort } from "../lib/port-snapping.mjs";
+import { PROTOCOL_STASH_SLOT_CAPACITY, PROTOCOL_STASH_SLOTS, PROTOCOL_STASH_TRANSFER_SECONDS, advanceProtocolStash, protocolStashCanAccept } from "../lib/protocol-stash.mjs";
 
 type TransportKind = "belt" | "pipe";
-type Kind = TransportKind | "refiner" | "crusher" | "fitter" | "molder" | "filler" | "dismantler" | "sealer" | "grinder" | "seedPicker" | "planter" | "reactor" | "expandedReactor" | "purifier" | "waterTreatment" | "forge" | "gearAssembler" | "waterPump" | "acidWaterPump" | "gasDisperser" | "liquidGasConverter" | "solidGasConverter" | "gasReactor" | "splitter" | "merger" | "logisticsBridge" | "itemLimiter" | "pipeSplitter" | "pipeMerger" | "pipeBridge" | "pipeLimiter" | "undergroundPipeInlet" | "undergroundPipeOutlet" | "multiUndergroundPipeInlet" | "multiUndergroundPipeOutlet" | "storagePort" | "tank" | "depot" | "powerPole";
+type Kind = TransportKind | "refiner" | "crusher" | "fitter" | "molder" | "filler" | "dismantler" | "sealer" | "grinder" | "seedPicker" | "planter" | "reactor" | "expandedReactor" | "purifier" | "waterTreatment" | "forge" | "gearAssembler" | "waterPump" | "acidWaterPump" | "gasDisperser" | "liquidGasConverter" | "solidGasConverter" | "gasReactor" | "splitter" | "merger" | "logisticsBridge" | "itemLimiter" | "pipeSplitter" | "pipeMerger" | "pipeBridge" | "pipeLimiter" | "undergroundPipeInlet" | "undergroundPipeOutlet" | "multiUndergroundPipeInlet" | "multiUndergroundPipeOutlet" | "storagePort" | "protocolStash" | "tank" | "depot" | "powerPole";
 type ProductionKind = "refiner" | "crusher" | "fitter" | "molder" | "filler" | "dismantler" | "sealer" | "grinder" | "seedPicker" | "planter" | "reactor" | "expandedReactor" | "purifier" | "waterTreatment" | "forge" | "gearAssembler" | "waterPump" | "acidWaterPump" | "gasDisperser" | "liquidGasConverter" | "solidGasConverter" | "gasReactor";
 type MachineMode = "solid" | "fluid" | "gas";
+type ProtocolStashMode = "wireless" | "storage";
 type DeviceCategory = "全部" | "资源开采" | "仓储存取" | "基础生产" | "合成制造" | "电力供应" | "功能设备" | "战斗辅助" | "种植调配";
 type Direction = 0 | 1 | 2 | 3;
 type PipeContent = "clean-water" | "liquid-xiranite" | "sewage";
 type OutputFilters = { solid?:string; pipe0?:string; pipe1?:string };
-type Cell = { kind: Kind; rotation: Direction; entry?: Direction; id: string; root?: boolean; partX?: number; partY?: number; size?: number; width?: number; height?: number; content?: PipeContent; itemId?: string; recipeId?:string; pairedEntityId?:string; outputFilters?:OutputFilters; autoMultiRecipeUnblock?:boolean };
+type Cell = { kind: Kind; rotation: Direction; entry?: Direction; id: string; root?: boolean; partX?: number; partY?: number; size?: number; width?: number; height?: number; content?: PipeContent; itemId?: string; recipeId?:string; pairedEntityId?:string; outputFilters?:OutputFilters; autoMultiRecipeUnblock?:boolean; protocolStashMode?:ProtocolStashMode };
 type Grid = Record<string, Cell>;
 
 const DEFAULT_COLS = 32;
@@ -76,10 +78,12 @@ const STATS_SMOOTHING_SECONDS=30;
 const STATS_SAMPLE_INTERVAL_SECONDS=5;
 const STATS_CHART_POINTS=Math.floor(STATS_HISTORY_SECONDS/STATS_SAMPLE_INTERVAL_SECONDS);
 const STATS_RETENTION_SECONDS=STATS_HISTORY_SECONDS+STATS_SMOOTHING_SECONDS;
+const PROTOCOL_STASH_POWER_USAGE=5;
 const totalInventory=(bucket:Record<string,number>)=>Object.values(bucket).reduce((sum,quantity)=>sum+quantity,0);
-const inputCapacityFor=(kind:Kind|undefined,transport:TransportKind)=>kind==="storagePort"?240:kind==="reactor"?200:kind==="expandedReactor"?400:["undergroundPipeInlet","undergroundPipeOutlet","multiUndergroundPipeInlet","multiUndergroundPipeOutlet"].includes(kind??"")?500:kind==="logisticsBridge"||kind==="pipeBridge"?0:["splitter","merger","itemLimiter","pipeSplitter","pipeMerger","pipeLimiter"].includes(kind??"")?30:transport==="pipe"?FLUID_INPUT_CAPACITY:SOLID_INPUT_CAPACITY;
-const outputCapacityFor=(kind:Kind|undefined)=>kind==="reactor"||kind==="expandedReactor"?0:OUTPUT_CAPACITY;
+const inputCapacityFor=(kind:Kind|undefined,transport:TransportKind)=>kind==="storagePort"?240:kind==="protocolStash"?PROTOCOL_STASH_SLOTS*PROTOCOL_STASH_SLOT_CAPACITY:kind==="reactor"?200:kind==="expandedReactor"?400:["undergroundPipeInlet","undergroundPipeOutlet","multiUndergroundPipeInlet","multiUndergroundPipeOutlet"].includes(kind??"")?500:kind==="logisticsBridge"||kind==="pipeBridge"?0:["splitter","merger","itemLimiter","pipeSplitter","pipeMerger","pipeLimiter"].includes(kind??"")?30:transport==="pipe"?FLUID_INPUT_CAPACITY:SOLID_INPUT_CAPACITY;
+const outputCapacityFor=(kind:Kind|undefined)=>kind==="reactor"||kind==="expandedReactor"||kind==="protocolStash"?0:OUTPUT_CAPACITY;
 const secondsToTicks=(seconds:number)=>Math.round(seconds*SIM_TICKS_PER_SECOND);
+const protocolStashProcessKey=(entityId:string)=>`protocol-stash:${entityId}`;
 const addQuantity=(bucket:Record<string,number>,itemId:string,amount:number)=>{bucket[itemId]=(bucket[itemId]??0)+amount};
 const modeLabel=(mode:MachineMode)=>mode==="fluid"?"液体模式":mode==="gas"?"气体模式":"固体模式";
 const chartPath=(values:number[],maximum:number,width=240,height=82)=>values.map((value,index)=>`${index?"L":"M"} ${(index/Math.max(1,values.length-1)*width).toFixed(2)} ${(height-value/Math.max(1,maximum)*height).toFixed(2)}`).join(" ");
@@ -195,9 +199,11 @@ const INDUSTRIAL_ITEMS:IndustrialItem[] = [
 const itemTransport=(itemId:string):TransportKind=>INDUSTRIAL_ITEMS.find((item)=>item.id===itemId)?.category==="流体"?"pipe":"belt";
 const inputTotalFor=(bucket:Record<string,number>,transport:TransportKind)=>Object.entries(bucket).reduce((sum,[itemId,quantity])=>sum+(itemTransport(itemId)===transport?quantity:0),0);
 const isSharedBufferMachine=(kind:Kind|undefined)=>kind==="reactor"||kind==="expandedReactor";
-const bufferSlotsFor=(kind:Kind|undefined)=>kind==="expandedReactor"?8:kind==="reactor"?4:0;
+const isSlotInventory=(kind:Kind|undefined)=>isSharedBufferMachine(kind)||kind==="protocolStash";
+const bufferSlotsFor=(kind:Kind|undefined)=>kind==="expandedReactor"?8:kind==="reactor"?4:kind==="protocolStash"?PROTOCOL_STASH_SLOTS:0;
 const occupiedBufferSlots=(bucket:Record<string,number>)=>occupiedSharedSlots(bucket);
 const bufferCanAccept=(kind:Kind|undefined,bucket:Record<string,number>,itemId:string,amount=1)=>{
+  if(kind==="protocolStash")return protocolStashCanAccept(bucket,itemId,amount);
   if(!isSharedBufferMachine(kind))return inputTotalFor(bucket,itemTransport(itemId))+amount<=inputCapacityFor(kind,itemTransport(itemId));
   return sharedBufferCanAccept(bucket,itemId,bufferSlotsFor(kind),amount);
 };
@@ -433,6 +439,7 @@ const edgePorts=(height:number,side:Direction,x:number):PortSpec[]=>Array.from({
 const EQUIPMENT_LAYOUTS: Partial<Record<Kind,EquipmentLayout>> = {
   depot:{width:1,height:3,inputs:[],outputs:[{x:0,y:1,side:0}]},
   storagePort:{width:1,height:3,inputs:[{x:0,y:1,side:2}],outputs:[]},
+  protocolStash:{width:3,height:3,inputs:edgePorts(3,2,0),outputs:edgePorts(3,0,2)},
   refiner:{width:3,height:3,inputs:[...edgePorts(3,2,0),{x:1,y:2,side:1,transport:"pipe",modes:["fluid"]}],outputs:[...edgePorts(3,0,2),{x:1,y:0,side:3,transport:"pipe",modes:["fluid"]}]},
   crusher:{width:3,height:3,inputs:edgePorts(3,2,0),outputs:edgePorts(3,0,2)},
   fitter:{width:3,height:3,inputs:edgePorts(3,2,0),outputs:edgePorts(3,0,2)},
@@ -689,6 +696,7 @@ const tools: { kind: Kind; label: string; type:"tool"|"device"; category?:Device
   { kind: "pipe", label: "管道", type:"tool", glyph: "PIPE", desc: "流体 · 120/min", image:"/assets/ui/pipe-tool.svg" },
   { kind: "depot", label: "仓库取货口", type:"device", category:"仓储存取", glyph: "D", desc: "1×3 · 指定物品输出", image:"/assets/machines/warehouse-pickup-port.webp" },
   { kind: "storagePort", label: "仓库存货口", type:"device", category:"仓储存取", glyph: "ST", desc: "1×3 · 回收入库", image:"/assets/machines/storage-port.webp" },
+  { kind: "protocolStash", label: "协议储存箱", type:"device", category:"仓储存取", glyph: "PSH", desc: "3×3 · 6 槽 · 无线回仓" },
   { kind: "splitter", label: "分流器", type:"device", category:"仓储存取", glyph: "S", desc: "1 入 · 3 出", image:"/assets/machines/splitter.webp" },
   { kind: "merger", label: "汇流器", type:"device", category:"仓储存取", glyph: "M", desc: "3 入 · 1 出", image:"/assets/machines/merger.webp" },
   { kind: "logisticsBridge", label: "物流桥", type:"device", category:"仓储存取", glyph: "BR", desc: "两轴独立直通 · 无库存", image:"/assets/machines/logistics-bridge.webp" },
@@ -755,7 +763,6 @@ const PIPE_LOGISTICS = new Set<Kind>(["pipeSplitter","pipeMerger","pipeBridge","
 const PIPE_TRANSFER_DEVICES = new Set<Kind>(["undergroundPipeInlet","undergroundPipeOutlet","multiUndergroundPipeInlet","multiUndergroundPipeOutlet"]);
 const isLogistics=(kind:Kind)=>BELT_LOGISTICS.has(kind)||PIPE_LOGISTICS.has(kind)||PIPE_TRANSFER_DEVICES.has(kind);
 const UNDERGROUND_INLETS=new Set<Kind>(["undergroundPipeInlet","multiUndergroundPipeInlet"]);
-const UNDERGROUND_OUTLETS=new Set<Kind>(["undergroundPipeOutlet","multiUndergroundPipeOutlet"]);
 const undergroundPairCompatible=(source:Kind,target:Kind)=>(source==="undergroundPipeInlet"&&target==="undergroundPipeOutlet")||(source==="undergroundPipeOutlet"&&target==="undergroundPipeInlet")||(source==="multiUndergroundPipeInlet"&&target==="multiUndergroundPipeOutlet")||(source==="multiUndergroundPipeOutlet"&&target==="multiUndergroundPipeInlet");
 const isBridge=(kind:Kind|undefined)=>kind==="logisticsBridge"||kind==="pipeBridge";
 const logisticsTransport=(kind:Kind):TransportKind|null=>BELT_LOGISTICS.has(kind)?"belt":PIPE_LOGISTICS.has(kind)?"pipe":null;
@@ -922,7 +929,7 @@ export default function Home() {
       const sourcePort=resolvedPorts.find((port)=>port.transport===route.kind&&port.type==="output"&&port.externalX===first.x&&port.externalY===first.y&&first.cell.entry===opposite(port.side));
       const targetPort=resolvedPorts.find((port)=>port.transport===route.kind&&port.type==="input"&&port.externalX===last.x&&port.externalY===last.y&&last.cell.rotation===opposite(port.side));
       const item=sourceItemFor(sourcePort,route.kind);
-      return {...route,sourcePort,targetPort,sourceConnected:Boolean(sourcePort),targetConnected:Boolean(targetPort),valid:Boolean(sourcePort),itemId:item?.id,itemName:item?.name??(sourcePort?.entityKind==="depot"?"取货口未选择物品":"未接入输出口"),itemImage:item?.image??""};
+      return {...route,sourcePort,targetPort,sourceConnected:Boolean(sourcePort),targetConnected:Boolean(targetPort),valid:Boolean(sourcePort),itemId:item?.id,itemName:item?.name??(sourcePort?.entityKind==="depot"?"取货口未选择物品":sourcePort?.entityKind==="protocolStash"?"协议储存箱库存":"未接入输出口"),itemImage:item?.image??""};
     });
     directPortConnections.forEach(({sourcePort,targetPort})=>{
       const kind=sourcePort.transport,item=sourceItemFor(sourcePort,kind);
@@ -930,7 +937,7 @@ export default function Home() {
         id:`direct-${sourcePort.key}-${targetPort.key}`,kind,direct:true,path:"",
         cells:[{x:targetPort.cellX,y:targetPort.cellY,cell:{id:`direct-${sourcePort.key}-${targetPort.key}`,kind,rotation:sourcePort.side,entry:opposite(sourcePort.side)}}],
         sourcePort,targetPort,sourceConnected:true,targetConnected:true,valid:true,
-        itemId:item?.id,itemName:item?.name??(sourcePort.entityKind==="depot"?"取货口未选择物品":"未接入输出口"),itemImage:item?.image??"",
+        itemId:item?.id,itemName:item?.name??(sourcePort.entityKind==="depot"?"取货口未选择物品":sourcePort.entityKind==="protocolStash"?"协议储存箱库存":"未接入输出口"),itemImage:item?.image??"",
       });
     });
     const outgoingByEntity=new Map<string,ConnectedFlowRoute[]>();
@@ -1016,8 +1023,13 @@ export default function Home() {
       const ensureInventory=(id:string)=>inventories[id]??(inventories[id]={input:{},output:{}});
       const entityKinds=new Map<string,Kind>();
       const productionEntities=new Map<string,{kind:ProductionKind;positions:Point[];cell:Cell}>();
+      const protocolStashEntities=new Map<string,{positions:Point[];cell:Cell}>();
       Object.entries(grid).forEach(([key,cell])=>{
         entityKinds.set(cell.id,cell.kind);
+        if(cell.kind==="protocolStash"){
+          const [x,y]=key.split(",").map(Number),entity=protocolStashEntities.get(cell.id)??{positions:[],cell};
+          entity.positions.push({x,y});protocolStashEntities.set(cell.id,entity);
+        }
         if(!(cell.kind in MACHINE_DEFINITIONS))return;
         const [x,y]=key.split(",").map(Number),kind=cell.kind as ProductionKind;
         const entity=productionEntities.get(cell.id)??{kind,positions:[],cell};entity.positions.push({x,y});productionEntities.set(cell.id,entity);
@@ -1030,6 +1042,12 @@ export default function Home() {
         const minX=Math.min(...entity.positions.map(({x})=>x)),minY=Math.min(...entity.positions.map(({y})=>y));acidEnvironmentZones.push({id,x:minX-5,y:minY-5,size:14});
       });
       entityKinds.forEach((kind,id)=>{if(isBridge(kind))delete inventories[id]});
+      protocolStashEntities.forEach((entity,id)=>{
+        const inventory=ensureInventory(id),minX=Math.min(...entity.positions.map(({x})=>x)),minY=Math.min(...entity.positions.map(({y})=>y));
+        const powered=powerZones.some((zone)=>zone.x<minX+3&&zone.x+zone.size>minX&&zone.y<minY+3&&zone.y+zone.size>minY),processKey=protocolStashProcessKey(id);
+        const advanced=advanceProtocolStash(inventory.input,processes[processKey]??0,{wireless:(entity.cell.protocolStashMode??"wireless")==="wireless",powered,transferTicks:secondsToTicks(PROTOCOL_STASH_TRANSFER_SECONDS)});
+        inventory.input=advanced.bucket;processes[processKey]=advanced.elapsedTicks;
+      });
       productionEntities.forEach((entity,id)=>{
         const definition=MACHINE_DEFINITIONS[entity.kind],inventory=ensureInventory(id);
         const minX=Math.min(...entity.positions.map(({x})=>x)),minY=Math.min(...entity.positions.map(({y})=>y));
@@ -1117,7 +1135,7 @@ export default function Home() {
         laneReadyAt[tunnelKey]=nextLaneReadyTick(tick,PIPE_HEADWAY_TICKS);transferredUnderground.add(cell.id);
       });
       const groups=new Map<string,ConnectedFlowRoute[]>();
-      connectedFlowRoutes.forEach((route)=>{if(!route.valid||!route.sourcePort||isBridge(route.sourcePort.entityKind)||(!route.itemId&&!UNDERGROUND_OUTLETS.has(route.sourcePort.entityKind)))return;const list=groups.get(route.sourcePort.entityId)??[];list.push(route);groups.set(route.sourcePort.entityId,list)});
+      connectedFlowRoutes.forEach((route)=>{if(!route.valid||!route.sourcePort||isBridge(route.sourcePort.entityKind)||(!route.itemId&&route.sourcePort.entityKind==="depot"))return;const list=groups.get(route.sourcePort.entityId)??[];list.push(route);groups.set(route.sourcePort.entityId,list)});
       groups.forEach((routes,sourceId)=>{
         const sourceKind=entityKinds.get(sourceId),sourceInventory=ensureInventory(sourceId);
         const ready=new Set(routes.filter((route)=>{
@@ -1193,7 +1211,7 @@ export default function Home() {
     return states;
   },[gasZones,grid,powerZones,simulation.inventories,simulation.processes,running]);
   const flowGraph=useMemo(()=>{
-    const visibleKinds=new Set<Kind>([...Object.keys(MACHINE_DEFINITIONS) as ProductionKind[],"depot","storagePort","splitter","merger","pipeSplitter","pipeMerger"]);
+    const visibleKinds=new Set<Kind>([...Object.keys(MACHINE_DEFINITIONS) as ProductionKind[],"depot","storagePort","protocolStash","splitter","merger","pipeSplitter","pipeMerger"]);
     const entities=new Map<string,{kind:Kind;cell:Cell;positions:Point[]}>();
     Object.entries(grid).forEach(([key,cell])=>{
       if(!visibleKinds.has(cell.kind))return;
@@ -1268,7 +1286,7 @@ export default function Home() {
     Object.entries(simulation.inventories).forEach(([id,inventory])=>{
       const kind=entityKinds.get(id);
       if(isBridge(kind))return;
-      if(isSharedBufferMachine(kind)){const state=machineStates[id];if(totalInventory(inventory.input)>=bufferSlotsFor(kind)*50||(occupiedBufferSlots(inventory.input)>=bufferSlotsFor(kind)&&state?.status==="blocked"))ids.add(id);return}
+      if(isSlotInventory(kind)){const state=machineStates[id];if(totalInventory(inventory.input)>=bufferSlotsFor(kind)*PROTOCOL_STASH_SLOT_CAPACITY||occupiedBufferSlots(inventory.input)>=bufferSlotsFor(kind)&&(kind==="protocolStash"||state?.status==="blocked"))ids.add(id);return}
       if(inputTotalFor(inventory.input,"belt")>=inputCapacityFor(kind,"belt")||inputTotalFor(inventory.input,"pipe")>=inputCapacityFor(kind,"pipe")||totalInventory(inventory.output)>=outputCapacityFor(kind))ids.add(id);
     });
     return ids;
@@ -1363,6 +1381,14 @@ export default function Home() {
   const selectedInventory=selectedEntityId?simulation.inventories[selectedEntityId]??{input:{},output:{}}:{input:{},output:{}};
   const inventoryMenuVisible=Boolean(selectedEntity&&selectedEntity.kind!=="depot"&&selectedEntity.kind!=="powerPole"&&!isBridge(selectedEntity.kind));
   const selectedSharedBuffer=Boolean(selectedEntity&&isSharedBufferMachine(selectedEntity.kind));
+  const selectedProtocolStash=Boolean(selectedEntity?.kind==="protocolStash");
+  const selectedSlotInventory=selectedSharedBuffer||selectedProtocolStash;
+  const selectedProtocolStashMode:ProtocolStashMode=selectedEntity?.protocolStashMode??"wireless";
+  const selectedProtocolStashPositions=selectedEntityId?Object.entries(grid).filter(([,cell])=>cell.id===selectedEntityId).map(([key])=>{const [x,y]=key.split(",").map(Number);return{x,y}}):[];
+  const selectedProtocolStashPowered=selectedProtocolStash&&selectedProtocolStashPositions.length>0&&powerZones.some((zone)=>{const minX=Math.min(...selectedProtocolStashPositions.map(({x})=>x)),minY=Math.min(...selectedProtocolStashPositions.map(({y})=>y));return zone.x<minX+3&&zone.x+zone.size>minX&&zone.y<minY+3&&zone.y+zone.size>minY});
+  const selectedProtocolStashTicks=selectedEntityId?simulation.processes[protocolStashProcessKey(selectedEntityId)]??0:0;
+  const selectedProtocolStashProgress=Math.min(100,selectedProtocolStashTicks/secondsToTicks(PROTOCOL_STASH_TRANSFER_SECONDS)*100);
+  const selectedProtocolStashRemaining=Math.max(0,(secondsToTicks(PROTOCOL_STASH_TRANSFER_SECONDS)-selectedProtocolStashTicks)/SIM_TICKS_PER_SECOND).toFixed(1);
   const selectedRelevantRecipes=selectedDefinition?.autoSchedule?selectedDefinition.recipes:selectedRecipe?[selectedRecipe]:[];
   const selectedInputItemIds=[...new Set([...selectedRelevantRecipes.flatMap((candidate)=>candidate.inputs.map((item)=>item.itemId)),...Object.keys(selectedInventory.input)])];
   const selectedSolidInputItemIds=selectedInputItemIds.filter((itemId)=>itemTransport(itemId)==="belt");
@@ -1796,15 +1822,23 @@ export default function Home() {
     setNotice(`扩容反应池 · 自动处理多配方阻塞${enabled?"已开启":"已关闭"}（占位设置，处理规则待补充）`);
   }
 
+  function setProtocolStashMode(entityId:string,mode:ProtocolStashMode) {
+    const entity=Object.values(grid).find((cell)=>cell.id===entityId);
+    if(entity?.kind!=="protocolStash")return;
+    setGrid((old)=>Object.fromEntries(Object.entries(old).map(([cellKey,cell])=>[cellKey,cell.id===entityId?{...cell,protocolStashMode:mode}:cell])));
+    setSimulation((previous)=>{const processes={...previous.processes};delete processes[protocolStashProcessKey(entityId)];return{...previous,processes}});
+    setNotice(`协议储存箱已切换为${mode==="wireless"?"无线传输模式 · 通电后每 5 秒回传全部库存":"仓储模式 · 保留库存并可由传送带输出"}`);
+  }
+
   function addInventory(entityId:string,side:"input"|"output",itemId:string,amount:number) {
     const item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===itemId);
     if(!item||!Number.isFinite(amount)||amount<=0)return;
     if(side==="input"&&!resolvedPorts.some((port)=>port.entityId===entityId&&port.type==="input"&&port.transport===itemTransport(itemId))){setNotice(`${tools.find((tool)=>tool.kind===entityKinds.get(entityId))?.label??"该设备"}没有匹配的${itemTransport(itemId)==="pipe"?"液体":"固体"}输入口`);return}
-    const kind=entityKinds.get(entityId),sharedBuffer=isSharedBufferMachine(kind),capacity=side==="input"?inputCapacityFor(kind,itemTransport(itemId)):outputCapacityFor(kind);
-    if(sharedBuffer&&side==="output"){setNotice("反应池没有独立产出库存 · 请放入内部暂存槽");return}
+    const kind=entityKinds.get(entityId),slotInventory=isSlotInventory(kind),sharedBuffer=isSharedBufferMachine(kind),capacity=side==="input"?inputCapacityFor(kind,itemTransport(itemId)):outputCapacityFor(kind);
+    if(slotInventory&&side==="output"){setNotice(kind==="protocolStash"?"协议储存箱使用统一存储槽 · 请直接放入存储槽":"反应池没有独立产出库存 · 请放入内部暂存槽");return}
     setSimulation((previous)=>{
       const current=previous.inventories[entityId]??{input:{},output:{}};
-      const bucket={...current[side]},space=sharedBuffer?((bucket[itemId]??0)>0||occupiedBufferSlots(bucket)<bufferSlotsFor(kind)?Math.max(0,50-(bucket[itemId]??0)):0):Math.max(0,capacity-(side==="input"?inputTotalFor(bucket,itemTransport(itemId)):totalInventory(bucket)));
+      const bucket={...current[side]},space=slotInventory?((bucket[itemId]??0)>0||occupiedBufferSlots(bucket)<bufferSlotsFor(kind)?Math.max(0,PROTOCOL_STASH_SLOT_CAPACITY-(bucket[itemId]??0)):0):Math.max(0,capacity-(side==="input"?inputTotalFor(bucket,itemTransport(itemId)):totalInventory(bucket)));
       const inserted=Math.min(Math.floor(amount),space);
       bucket[itemId]=(bucket[itemId]??0)+inserted;
       return {...previous,inventories:{...previous.inventories,[entityId]:{...current,[side]:bucket}}};
@@ -1813,7 +1847,7 @@ export default function Home() {
       const entity=Object.values(grid).find((cell)=>cell.id===entityId&&cell.kind in MACHINE_DEFINITIONS),current=simulation.inventories[entityId]?.input??{};
       if(entity){const space=Math.max(0,capacity-inputTotalFor(current,itemTransport(itemId))),projected={...current,[itemId]:(current[itemId]??0)+Math.min(Math.floor(amount),space)},definition=MACHINE_DEFINITIONS[entity.kind as ProductionKind],nextRecipe=automaticRecipe(definition,entity.recipeId,projected);setGrid((old)=>Object.fromEntries(Object.entries(old).map(([key,cell])=>[key,cell.id===entityId?{...cell,recipeId:nextRecipe.id}:cell])))}
     }
-    setNotice(`${item.name}已放入${sharedBuffer?"内部暂存槽":side==="input"?"输入":"产出"} · 超出容量或槽位上限的数量不会写入`);
+    setNotice(`${item.name}已放入${sharedBuffer?"内部暂存槽":kind==="protocolStash"?"存储槽":side==="input"?"输入":"产出"} · 超出容量或槽位上限的数量不会写入`);
   }
 
   function collectAllInventory(entityId:string) {
@@ -1830,7 +1864,7 @@ export default function Home() {
     const remove=(old:Grid)=>{const next={...old};keys.forEach((key)=>delete next[key]);Object.entries(next).forEach(([cellKey,cell])=>{if(cell.pairedEntityId===target.id)next[cellKey]={...cell,pairedEntityId:undefined}});return next};
     if(target.kind==="pipe")setPipeGrid(remove);else setGrid(remove);
     if(route)setSimulation((previous)=>{const laneReadyAt={...previous.laneReadyAt},routeTransfers={...previous.routeTransfers};delete laneReadyAt[route.id];delete routeTransfers[route.id];return {...previous,transits:previous.transits.filter((transit)=>transit.routeId!==route.id),laneReadyAt,routeTransfers}});
-    else if(!isTransport(target.kind))setSimulation((previous)=>{const inventories={...previous.inventories},processes={...previous.processes},recipeCursor={...previous.recipeCursor},laneReadyAt={...previous.laneReadyAt},routeTransfers={...previous.routeTransfers};delete inventories[target.id];delete recipeCursor[target.id];Object.keys(processes).filter((processKey)=>processKey===target.id||processKey.startsWith(`${target.id}::`)).forEach((processKey)=>delete processes[processKey]);Object.keys(laneReadyAt).filter((laneKey)=>laneKey.includes(target.id)).forEach((laneKey)=>delete laneReadyAt[laneKey]);const affected=new Set(connectedFlowRoutes.filter((candidate)=>candidate.sourcePort?.entityId===target.id||candidate.targetPort?.entityId===target.id).map((candidate)=>candidate.id));affected.forEach((routeId)=>{delete laneReadyAt[routeId];delete routeTransfers[routeId]});return {...previous,inventories,processes,recipeCursor,laneReadyAt,routeTransfers,transits:previous.transits.filter((transit)=>!affected.has(transit.routeId))}});
+    else if(!isTransport(target.kind))setSimulation((previous)=>{const inventories={...previous.inventories},processes={...previous.processes},recipeCursor={...previous.recipeCursor},laneReadyAt={...previous.laneReadyAt},routeTransfers={...previous.routeTransfers};delete inventories[target.id];delete recipeCursor[target.id];Object.keys(processes).filter((processKey)=>processKey===target.id||processKey.startsWith(`${target.id}::`)||processKey===protocolStashProcessKey(target.id)).forEach((processKey)=>delete processes[processKey]);Object.keys(laneReadyAt).filter((laneKey)=>laneKey.includes(target.id)).forEach((laneKey)=>delete laneReadyAt[laneKey]);const affected=new Set(connectedFlowRoutes.filter((candidate)=>candidate.sourcePort?.entityId===target.id||candidate.targetPort?.entityId===target.id).map((candidate)=>candidate.id));affected.forEach((routeId)=>{delete laneReadyAt[routeId];delete routeTransfers[routeId]});return {...previous,inventories,processes,recipeCursor,laneReadyAt,routeTransfers,transits:previous.transits.filter((transit)=>!affected.has(transit.routeId))}});
     setSelectedEntityId(null);setSelectedTransportKey(null);setPickedEntity(null);setPlacementPreview(null);setNotice(isTransport(target.kind)?`整条${target.kind==="pipe"?"管道":"传送带"}线路已拆除`:"设备及其独立库存已拆除");
   }
 
@@ -1870,7 +1904,7 @@ export default function Home() {
     const transport=logisticsTransport(kind),underlying=transport==="pipe"?pipeGrid[cells[0]]:transport==="belt"?grid[cells[0]]:undefined;
     const rotation=straightDirection(underlying)??0,id=crypto.randomUUID(),rootIndex=Math.floor(height/2)*width+Math.floor(width/2);
     const definition=kind in MACHINE_DEFINITIONS?MACHINE_DEFINITIONS[kind as ProductionKind]:undefined,recipeId=definition?.recipes[0].id,outputFilters=definition?.autoSchedule?defaultOutputFilters(definition):undefined;
-    setGrid((old)=>{const next={...old};cells.forEach((key,index)=>next[key]={kind,rotation,id,root:index===rootIndex,partX:index%width,partY:Math.floor(index/width),size:Math.max(width,height),width,height,recipeId,outputFilters});return next});
+    setGrid((old)=>{const next={...old};cells.forEach((key,index)=>next[key]={kind,rotation,id,root:index===rootIndex,partX:index%width,partY:Math.floor(index/width),size:Math.max(width,height),width,height,recipeId,outputFilters,protocolStashMode:kind==="protocolStash"?"wireless":undefined});return next});
     if(transport==="pipe")setPipeGrid((old)=>{const next={...old};cells.forEach((key)=>delete next[key]);return next});
     if(transport&&underlying)setSimulation((previous)=>({...previous,transits:[],laneReadyAt:{},routeTransfers:{}}));
     setSelected("belt");setSelectionMode(true);setMarqueeMode(false);setGroupSelection(null);setSelectedEntityId(id);setSelectedTransportKey(null);
@@ -2012,20 +2046,21 @@ export default function Home() {
             {inventoryMenuVisible&&selectedEntityId&&selectedEntity&&<aside className="device-menu" role="dialog" aria-label={`${tools.find((tool)=>tool.kind===selectedEntity.kind)?.label??"设备"}库存`}>
               <header><div><small>DEVICE BUFFER</small><strong>{selectedDefinition?.name??tools.find((tool)=>tool.kind===selectedEntity.kind)?.label}</strong></div><button aria-label="关闭设备库存" onClick={()=>setSelectedEntityId(null)}>×</button></header>
               {PIPE_TRANSFER_DEVICES.has(selectedEntity.kind)&&<section className="underground-link"><div className="recipe-heading"><strong>地下暗管配对</strong><span>{selectedEntity.pairedEntityId?"已连接":"未连接"}</span></div><label><span>配对设备</span><select aria-label="暗管配对设备" value={selectedEntity.pairedEntityId??""} onChange={(event)=>setUndergroundPair(selectedEntityId,event.target.value)}><option value="">不配对</option>{undergroundCandidates.map((candidate,index)=><option key={candidate.id} value={candidate.id}>{tools.find((tool)=>tool.kind===candidate.kind)?.label} #{String(index+1).padStart(2,"0")}</option>)}</select></label><small>同规格入口与出口一对一连接；配对独立保存，不依赖画布上的可见管线路径。</small></section>}
+              {selectedProtocolStash&&<section className="recipe-control protocol-stash-control"><div className="recipe-heading"><strong>工作模式</strong><span>{PROTOCOL_STASH_POWER_USAGE} 电力</span></div><div className="mode-switch" role="group" aria-label="协议储存箱工作模式"><button className={selectedProtocolStashMode==="wireless"?"active":""} onClick={()=>setProtocolStashMode(selectedEntityId,"wireless")}>无线传输</button><button className={selectedProtocolStashMode==="storage"?"active":""} onClick={()=>setProtocolStashMode(selectedEntityId,"storage")}>仓储</button></div><small>{selectedProtocolStashMode==="wireless"?selectedProtocolStashPowered?"已接入供电范围 · 每 5 秒将全部存储物品回传基地仓库":"未接入供电范围 · 无线回传暂停":"保留全部库存 · 可通过右侧输出口向传送带发货"}</small><div className="protocol-transfer-meter"><span>{selectedProtocolStashMode==="storage"?"仓储模式":selectedProtocolStashPowered?running?`下次回传 ${selectedProtocolStashRemaining}s`:"模拟暂停":"等待供电"}</span><i><b style={{width:`${selectedProtocolStashMode==="wireless"&&selectedProtocolStashPowered?selectedProtocolStashProgress:0}%`}}/></i></div></section>}
               {selectedDefinition&&selectedRecipe&&<>
                 {selectedDefinition.autoSchedule?<section className="recipe-control parallel-recipes"><div className="recipe-heading"><strong>{selectedDefinition.bufferSlots} 个内部暂存槽</strong><span>每槽 50 · {selectedDefinition.powerUsage} 电力</span></div><div className="parallel-recipe-list">{selectedDefinition.recipes.map((candidate)=>{const ticks=simulation.processes[`${selectedEntityId}::${candidate.id}`]??0,ready=candidate.inputs.every((requirement)=>(selectedInventory.input[requirement.itemId]??0)>=requirement.amount)&&Boolean(bufferAfterRecipe(selectedEntity.kind,selectedInventory.input,candidate));return <div key={candidate.id} className={ticks>0?"active":ready?"ready":""}><span><b>{candidate.name}</b><small>{ticks>0?"处理中 · 配方锁定":ready?"可运行":"等待暂存物"}</small></span><i><b style={{width:`${Math.min(100,ticks/candidate.durationTicks*100)}%`}}/></i></div>})}</div><small>{selectedDefinition.autoSchedule==="parallel"?"所有能跑通的配方同时处理；同一配方完成前不会重复启动。":"所有能跑通的配方轮流处理；当前配方完成前不会切换。"} 产物返回同一组暂存槽。</small>{selectedEntity.kind==="expandedReactor"&&<label className="placeholder-switch"><span><b>自动处理多配方阻塞</b><small>占位设置 · 具体处理规则待补充</small></span><input aria-label="自动处理多配方阻塞" type="checkbox" checked={Boolean(selectedEntity.autoMultiRecipeUnblock)} onChange={(event)=>setExpandedReactorAutoUnblock(selectedEntityId,event.target.checked)}/><i aria-hidden="true"/></label>}</section>:<section className="recipe-control"><div className="recipe-heading"><strong>工作模式与配方</strong><span>{selectedDefinition.powerUsage} 电力</span></div>{selectedModes.length>1&&<div className="mode-switch" role="group" aria-label="设备工作模式">{selectedModes.map((mode)=><button key={mode} className={selectedRecipe.mode===mode?"active":""} onClick={()=>setMachineRecipe(selectedEntityId,selectedDefinition.recipes.find((candidate)=>candidate.mode===mode)!.id)}>{modeLabel(mode)}</button>)}</div>}<label><span>当前配方</span><select aria-label="当前处理配方" value={selectedRecipe.id} onChange={(event)=>setMachineRecipe(selectedEntityId,event.target.value)}>{selectedDefinition.recipes.filter((candidate)=>candidate.mode===selectedRecipe.mode).map((candidate)=><option key={candidate.id} value={candidate.id}>{candidate.name} · {candidate.durationTicks/SIM_TICKS_PER_SECOND}s</option>)}</select></label><small className="recipe-rate">额定流量 · {recipeRateText(selectedRecipe)}</small><small>设备会根据输入库存自动匹配配方；手动切换会清零当前加工周期。</small></section>}
                 <div className="device-process"><span>{selectedSharedBuffer?"自动检查全部暂存槽配方":recipeText(selectedRecipe)}</span><i><b style={{width:`${machineStates[selectedEntityId]?.progress??0}%`}}/></i><small>{machineStates[selectedEntityId]?.status==="running"?`处理中 · 剩余 ${machineStates[selectedEntityId]?.remaining}s`:machineStates[selectedEntityId]?.status==="blocked"?(selectedSharedBuffer?"暂存槽无法继续处理 · 已阻塞":"产出库存已满 · 已阻塞"):machineStates[selectedEntityId]?.status==="environment"?"缺少酸性气体环境":"等待处理条件"}</small></div>
               </>}
-              {selectedSharedBuffer?<>
-                <section className="inventory-section shared-buffer"><div className="inventory-heading"><strong>内部暂存槽</strong><span>{occupiedBufferSlots(selectedInventory.input)} / {bufferSlotsFor(selectedEntity.kind)} 槽 · 每槽 50</span></div>
-                  <div className="inventory-meter"><i style={{width:`${Math.min(100,totalInventory(selectedInventory.input)/(bufferSlotsFor(selectedEntity.kind)*50)*100)}%`}}/></div>
-                  <div className="buffer-slot-list">{Array.from({length:bufferSlotsFor(selectedEntity.kind)},(_,index)=>{const entry=Object.entries(selectedInventory.input).filter(([,quantity])=>quantity>0)[index],item=entry?INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===entry[0]):undefined;return <div key={index} className={entry?"occupied":"empty"}><em>{String(index+1).padStart(2,"0")}</em>{entry?<><span>{item&&<AssetThumb src={item.image} label={item.name}/>}<b>{item?.name??entry[0]}</b></span><strong>{entry[1]} / 50</strong></>:<small>空槽</small>}</div>})}</div>
+              {selectedSlotInventory?<>
+                <section className="inventory-section shared-buffer"><div className="inventory-heading"><strong>{selectedProtocolStash?"存储槽":"内部暂存槽"}</strong><span>{occupiedBufferSlots(selectedInventory.input)} / {bufferSlotsFor(selectedEntity.kind)} 槽 · 每槽 {PROTOCOL_STASH_SLOT_CAPACITY}</span></div>
+                  <div className="inventory-meter"><i style={{width:`${Math.min(100,totalInventory(selectedInventory.input)/(bufferSlotsFor(selectedEntity.kind)*PROTOCOL_STASH_SLOT_CAPACITY)*100)}%`}}/></div>
+                  <div className="buffer-slot-list">{Array.from({length:bufferSlotsFor(selectedEntity.kind)},(_,index)=>{const entry=Object.entries(selectedInventory.input).filter(([,quantity])=>quantity>0)[index],item=entry?INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===entry[0]):undefined;return <div key={index} className={entry?"occupied":"empty"}><em>{String(index+1).padStart(2,"0")}</em>{entry?<><span>{item&&<AssetThumb src={item.image} label={item.name}/>}<b>{item?.name??entry[0]}</b></span><strong>{entry[1]} / {PROTOCOL_STASH_SLOT_CAPACITY}</strong></>:<small>空槽</small>}</div>})}</div>
                 </section>
-                <section className="output-routing"><div className="inventory-heading"><strong>暂存槽输出选择</strong><span>独立于配方</span></div>
+                {selectedSharedBuffer&&<section className="output-routing"><div className="inventory-heading"><strong>暂存槽输出选择</strong><span>独立于配方</span></div>
                   {selectedHasSolidOutput&&<label><span>物品输出 · 全部传送带口</span><select aria-label="反应池物品输出" value={(selectedEntity.outputFilters??defaultOutputFilters(selectedDefinition)).solid??""} onChange={(event)=>setMachineOutputFilter(selectedEntityId,"solid",event.target.value)}><option value="">关闭输出</option>{selectedSolidOutputOptions.map((itemId)=><option key={itemId} value={itemId}>{itemName(itemId)}</option>)}</select></label>}
                   {selectedPipeOutputPorts.map((port,index)=>{const key=outputFilterKey(port,"pipe"),value=(selectedEntity.outputFilters??defaultOutputFilters(selectedDefinition))[key]??"";return <label key={port.key}><span>管道输出 {index+1}</span><select aria-label={`反应池管道输出 ${index+1}`} value={value} onChange={(event)=>setMachineOutputFilter(selectedEntityId,key,event.target.value)}><option value="">关闭输出</option>{selectedPipeOutputOptions.map((itemId)=><option key={itemId} value={itemId}>{itemName(itemId)}</option>)}</select></label>})}
                   <small>物品输出只能选择一种；两个管道输出可分别选择不同介质。只会取出暂存槽中实际存在的内容。</small>
-                </section>
+                </section>}
               </>:<>
                 <section className="inventory-section solid"><div className="inventory-heading"><strong>固体输入库存</strong><span>{selectedSolidInputTotal} / {inputCapacityFor(selectedEntity.kind,"belt")}</span></div>
                   <div className="inventory-meter"><i style={{width:`${Math.min(100,selectedSolidInputTotal/inputCapacityFor(selectedEntity.kind,"belt")*100)}%`}}/></div>
@@ -2040,9 +2075,9 @@ export default function Home() {
                   <div className="inventory-list">{selectedOutputItemIds.length?selectedOutputItemIds.map((itemId)=>{const item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===itemId);return <div key={itemId}><span>{item&&<AssetThumb src={item.image} label={item.name}/>} {item?.name??itemId}</span><b>{selectedInventory.output[itemId]??0}</b></div>}):<small>暂无物品</small>}</div>
                 </section>
               </>}
-              <section className="inventory-inject"><strong>{selectedSharedBuffer?"直接放入内部暂存槽":"直接放入库存"}</strong><select aria-label="库存物品" value={inventoryItemId} onChange={(event)=>setInventoryItemId(event.target.value)}>{INDUSTRIAL_ITEMS.map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</select><input aria-label="放入数量" type="number" min="1" max="60" value={inventoryAmount} onChange={(event)=>setInventoryAmount(Math.max(1,Number(event.target.value)))}/><div><button onClick={()=>addInventory(selectedEntityId,"input",inventoryItemId,inventoryAmount)}>{selectedSharedBuffer?"放入暂存槽":"放入输入库存"}</button>{!selectedSharedBuffer&&<button onClick={()=>addInventory(selectedEntityId,"output",inventoryItemId,inventoryAmount)}>放入产出库存</button>}</div></section>
-              <section className="inventory-collect"><span><strong>设备库存操作</strong><small>{selectedSharedBuffer?"清空全部内部暂存槽":"清空输入与产出库存"}</small></span><button aria-label="全部收取设备库存" disabled={totalInventory(selectedInventory.input)+totalInventory(selectedInventory.output)===0} onClick={()=>collectAllInventory(selectedEntityId)}>全部收取 <b>{totalInventory(selectedInventory.input)+totalInventory(selectedInventory.output)}</b></button></section>
-              <footer>{inventoryFullIds.has(selectedEntityId)?"库存或暂存槽已阻塞 · 相连物流暂停，设备边框标红":selectedSharedBuffer?"所有物品共用暂存槽 · 错误物品同样占用槽位":"固体与管道介质输入分别计容 · 任何物品均可进入并真实占用库存"}</footer>
+              <section className="inventory-inject"><strong>{selectedSharedBuffer?"直接放入内部暂存槽":selectedProtocolStash?"直接放入存储槽":"直接放入库存"}</strong><select aria-label="库存物品" value={inventoryItemId} onChange={(event)=>setInventoryItemId(event.target.value)}>{INDUSTRIAL_ITEMS.map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</select><input aria-label="放入数量" type="number" min="1" max="60" value={inventoryAmount} onChange={(event)=>setInventoryAmount(Math.max(1,Number(event.target.value)))}/><div><button onClick={()=>addInventory(selectedEntityId,"input",inventoryItemId,inventoryAmount)}>{selectedSharedBuffer?"放入暂存槽":selectedProtocolStash?"放入存储槽":"放入输入库存"}</button>{!selectedSlotInventory&&<button onClick={()=>addInventory(selectedEntityId,"output",inventoryItemId,inventoryAmount)}>放入产出库存</button>}</div></section>
+              <section className="inventory-collect"><span><strong>设备库存操作</strong><small>{selectedSharedBuffer?"清空全部内部暂存槽":selectedProtocolStash?"清空全部存储槽":"清空输入与产出库存"}</small></span><button aria-label="全部收取设备库存" disabled={totalInventory(selectedInventory.input)+totalInventory(selectedInventory.output)===0} onClick={()=>collectAllInventory(selectedEntityId)}>全部收取 <b>{totalInventory(selectedInventory.input)+totalInventory(selectedInventory.output)}</b></button></section>
+              <footer>{inventoryFullIds.has(selectedEntityId)?"库存或暂存槽已阻塞 · 相连物流暂停，设备边框标红":selectedSharedBuffer?"所有物品共用暂存槽 · 错误物品同样占用槽位":selectedProtocolStash?"6 个物品槽共用库存 · 无线模式仅在供电并运行模拟时回传":"固体与管道介质输入分别计容 · 任何物品均可进入并真实占用库存"}</footer>
             </aside>}
             <div className="axis axis-y">12<br/>08<br/>04<br/>00</div>
             <div ref={gridRef} className={`grid ${panning ? "is-panning" : ""} ${pickedEntity||pickedGroup?"is-placing":""} ${marqueeMode?"marquee-mode":""} ${running ? "simulation-running" : ""}`} style={{ gridTemplateColumns: `repeat(${cols}, 1fr)`, aspectRatio:`${cols}/${rows}`, transform:`translate(${pan.x}px,${pan.y}px) scale(${zoom})` }}
