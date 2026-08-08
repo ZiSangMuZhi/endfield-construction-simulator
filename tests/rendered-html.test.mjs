@@ -423,6 +423,8 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(css, /\.machine-heading\{/);
   assert.match(css, /\.machine-detail-compact \.machine-progress>em\{/);
   assert.match(css, /\.machine-detail-minimal \.machine-recipe/);
+  assert.match(css, /--machine-art-width:72%;--machine-text-start:28%/);
+  assert.match(css, /mask-image:linear-gradient\(90deg/);
   assert.match(css, /\.shortcut-guide>div\{/);
   assert.match(css, /\.flow-node\{/);
   assert.match(css, /\.flow-link\.pipe path/);
