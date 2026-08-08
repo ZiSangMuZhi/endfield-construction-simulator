@@ -109,6 +109,15 @@ test("maps the long-press radial gesture to stable directional actions", async (
   assert.equal(radial.radialSelection(8, 8).action, null);
 });
 
+test("maps direct equipment dragging to a footprint-preserving grid origin", async () => {
+  const drag = await import(new URL("../lib/device-drag.ts", import.meta.url));
+  const rect={left:0,top:0,right:320,bottom:320,width:320,height:320};
+  assert.equal(drag.DEVICE_DRAG_THRESHOLD_PX,7);
+  assert.deepEqual(drag.deviceDragTarget(105,105,rect,32,32,3,3,1,2),{x:9,y:8});
+  assert.deepEqual(drag.deviceDragTarget(319,319,rect,32,32,4,5,0,0),{x:28,y:27});
+  assert.equal(drag.deviceDragTarget(400,100,rect,32,32,3,3,0,0),null);
+});
+
 test("keeps each logistics bridge axis strictly opposite and independent", async () => {
   const routing=await import(new URL("../lib/bridge-routing.ts",import.meta.url));
   const incoming={id:"incoming",targetPort:{entityId:"bridge-a",entityKind:"logisticsBridge",index:0,side:2}};
@@ -400,9 +409,17 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(page, /const visibleKinds=new Set<Kind>/);
   assert.match(page, /route=bridgeForwardRoutes\.get\(route\.id\)/);
   assert.match(page, /className="port-overlay"/);
+  assert.match(page, /PORT_VISUAL_INSET/);
+  assert.match(page, /directDragPickedRef/);
+  assert.match(page, /startDeviceRadial\(event,baseCell\.id,baseCell\.partX\?\?0,baseCell\.partY\?\?0\)/);
+  assert.match(page, /className="shortcut-guide"/);
+  assert.match(page, /拖动设备/);
   assert.match(page, /className=\{`port-marker global-port/);
   assert.match(css, /\.cell>\.port-marker\{display:none!important\}/);
   assert.match(css, /\.port-overlay\{[^}]*z-index:36/);
+  assert.match(css, /\.port-overlay \.global-port\{width:13px!important;height:22px!important/);
+  assert.match(css, /\.machine-heading\{/);
+  assert.match(css, /\.shortcut-guide>div\{/);
   assert.match(css, /\.flow-node\{/);
   assert.match(css, /\.flow-link\.pipe path/);
   assert.match(css, /\.route-track\.draft-route\.invalid/);

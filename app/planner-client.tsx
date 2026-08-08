@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BELT_HEADWAY_TICKS, BELT_ITEMS_PER_MINUTE, PIPE_HEADWAY_TICKS, PIPE_ITEMS_PER_MINUTE, PIPE_LANE_PROFILE, SIM_TICK_MS, SIM_TICKS_PER_SECOND, advanceBeltLane, advancePipeLane, beltLaneCanAccept, beltLaneIsFull, beltTravelSeconds, nextLaneReadyTick, pipeLaneCanAccept, pipeLaneIsFull } from "../lib/belt-timing";
 import { bridgePortsPair, pairedBridgeOutput } from "../lib/bridge-routing";
+import { DEVICE_DRAG_THRESHOLD_PX, deviceDragTarget } from "../lib/device-drag";
 import { RADIAL_CONFIRM_DELAY_MS, RADIAL_HOLD_DELAY_MS, RADIAL_PREOPEN_TOLERANCE_PX, RadialAction, radialSelection } from "../lib/radial-menu";
 import { occupiedSharedSlots, serialRecipeCandidate, sharedBufferAfterRecipe, sharedBufferCanAccept, sharedBufferWithOutputs } from "../lib/machine-buffer.mjs";
 import { selectSnapPort } from "../lib/port-snapping.mjs";
@@ -25,6 +26,7 @@ type Grid = Record<string, Cell>;
 const DEFAULT_COLS = 32;
 const DEFAULT_ROWS = 32;
 const MAX_CANVAS_SIZE = 48;
+const PORT_VISUAL_INSET = .24;
 const PUBLIC_BASE_PATH=process.env.NEXT_PUBLIC_BASE_PATH??"";
 const publicAssetPath=(src:string)=>src.startsWith("/")?`${PUBLIC_BASE_PATH}${src}`:src;
 const keyOf = (x: number, y: number) => `${x},${y}`;
@@ -58,7 +60,7 @@ type BeltDraft = { kind:TransportKind; cells:Point[]; waypoints:Point[]; sourceP
 type DraftCrossing = { key:string; x:number; y:number; bridgeKind:"logisticsBridge"|"pipeBridge"; rotation:Direction };
 type DraftAnalysis = { valid:boolean; conflicts:Set<string>; crossings:DraftCrossing[] };
 type RadialMenuState = { entityId:string; x:number; y:number; pointerId:number; active:RadialAction|null; phase:"open"|"confirming"; angle:number; distance:number };
-type RadialGesture = { entityId:string; pointerId:number; startX:number; startY:number; currentX:number; currentY:number; opened:boolean };
+type RadialGesture = { entityId:string; pointerId:number; startX:number; startY:number; currentX:number; currentY:number; opened:boolean; dragging:boolean; grabDx:number; grabDy:number };
 type ConnectedFlowRoute = FlowRoute & { direct?:boolean; sourcePort?:ResolvedPort; targetPort?:ResolvedPort; sourceConnected:boolean; targetConnected:boolean; valid:boolean; itemId?:string; itemName:string; itemImage:string };
 type DirectPortConnection = { sourcePort:ResolvedPort; targetPort:ResolvedPort };
 type IndustrialItem = { id:string; name:string; category:"矿物"|"工业产物"|"流体"; image?:string; color?:string };
@@ -879,6 +881,7 @@ export default function Home() {
   const radialHoldTimer=useRef<number|null>(null);
   const radialConfirmTimer=useRef<number|null>(null);
   const radialGestureRef=useRef<RadialGesture|null>(null);
+  const directDragPickedRef=useRef<PickedEntity|null>(null);
 
   useEffect(() => () => {
     if(radialHoldTimer.current!==null)window.clearTimeout(radialHoldTimer.current);
@@ -1578,16 +1581,23 @@ export default function Home() {
     placePickedGroup(groupSelection.minX,groupSelection.minY,picked);
   }
 
-  function prepareEntityPlacement(id: string, mode: "move" | "copy") {
+  function entityPlacement(id:string,mode:"move"|"copy") {
     const entries = Object.entries(grid).filter(([, cell]) => cell.id === id);
-    if (!entries.length) return;
+    if (!entries.length) return null;
     const positions = entries.map(([key, cell]) => { const [x,y]=key.split(",").map(Number); return {x,y,cell}; });
     const minX=Math.min(...positions.map((item)=>item.x)), minY=Math.min(...positions.map((item)=>item.y));
     const kind=positions[0].cell.kind;
-    setPickedEntity({id,mode,sourceType:"entity",sourceKeys:entries.map(([key])=>key),cells:positions.map(({x,y,cell})=>({dx:x-minX,dy:y-minY,cell})),label:tools.find((tool)=>tool.kind===kind)?.label??"设备",image:tools.find((tool)=>tool.kind===kind)?.image});
-    setPlacementPreview({x:minX,y:minY});
+    return {picked:{id,mode,sourceType:"entity" as const,sourceKeys:entries.map(([key])=>key),cells:positions.map(({x,y,cell})=>({dx:x-minX,dy:y-minY,cell})),label:tools.find((tool)=>tool.kind===kind)?.label??"设备",image:tools.find((tool)=>tool.kind===kind)?.image},origin:{x:minX,y:minY}};
+  }
+
+  function prepareEntityPlacement(id: string, mode: "move" | "copy") {
+    const placement=entityPlacement(id,mode);
+    if(!placement)return null;
+    setPickedEntity(placement.picked);
+    setPlacementPreview(placement.origin);
     setSelectionMode(true);
     setNotice(mode === "move" ? "移动模式 · 设备随鼠标吸附到网格，单击放下" : "复制模式 · 副本随鼠标吸附到网格，单击放置");
+    return placement.picked;
   }
 
   function prepareRoutePlacement(route:FlowRoute,mode:"move"|"copy") {
@@ -1603,29 +1613,29 @@ export default function Home() {
     if(selectedRoute)prepareRoutePlacement(selectedRoute,mode);
   }
 
-  function placePicked(x: number, y: number) {
-    if (!pickedEntity) return false;
-    const targets = pickedEntity.cells.map((item)=>({key:keyOf(x+item.dx,y+item.dy),x:x+item.dx,y:y+item.dy,item}));
-    const routeKind=pickedEntity.sourceType==="route"&&pickedEntity.cells[0]?.cell.kind==="pipe"?"pipe":"belt";
+  function placePicked(x: number, y: number, placement=pickedEntity) {
+    if (!placement) return false;
+    const targets = placement.cells.map((item)=>({key:keyOf(x+item.dx,y+item.dy),x:x+item.dx,y:y+item.dy,item}));
+    const routeKind=placement.sourceType==="route"&&placement.cells[0]?.cell.kind==="pipe"?"pipe":"belt";
     const blocked = targets.some(({key,x:tx,y:ty}) => {
       if(tx<0||ty<0||tx>=cols||ty>=rows)return true;
-      const movingOwn=pickedEntity.mode==="move"&&pickedEntity.sourceKeys.includes(key);
-      if(pickedEntity.sourceType==="entity")return Boolean((grid[key]&&!movingOwn)||pipeGrid[key]);
+      const movingOwn=placement.mode==="move"&&placement.sourceKeys.includes(key);
+      if(placement.sourceType==="entity")return Boolean((grid[key]&&!movingOwn)||pipeGrid[key]);
       return routeKind==="pipe"?Boolean((pipeGrid[key]&&!movingOwn)||(grid[key]&&!isTransport(grid[key].kind))):Boolean(grid[key]&&!movingOwn);
     });
-    if (blocked) { setNotice("目标位置超出画布或与现有设施冲突"); return true; }
-    const placedId = pickedEntity.mode === "copy" ? crypto.randomUUID() : pickedEntity.id;
-    const write=(old:Grid)=>{const next={...old};if(pickedEntity.mode==="move")pickedEntity.sourceKeys.forEach((key)=>delete next[key]);targets.forEach(({key,item})=>{next[key]={...item.cell,id:placedId,pairedEntityId:pickedEntity.mode==="copy"?undefined:item.cell.pairedEntityId}});return next};
-    if(pickedEntity.sourceType==="route"&&routeKind==="pipe")setPipeGrid(write);else setGrid(write);
-    if(pickedEntity.sourceType==="entity"){
-      if(pickedEntity.mode==="copy")setSimulation((previous)=>({...previous,inventories:{...previous.inventories,[placedId]:{input:{},output:{}}},processes:{...previous.processes,[placedId]:0}}));
+    if (blocked) { setNotice("目标位置超出画布或与现有设施冲突 · 原对象保持不变"); return false; }
+    const placedId = placement.mode === "copy" ? crypto.randomUUID() : placement.id;
+    const write=(old:Grid)=>{const next={...old};if(placement.mode==="move")placement.sourceKeys.forEach((key)=>delete next[key]);targets.forEach(({key,item})=>{next[key]={...item.cell,id:placedId,pairedEntityId:placement.mode==="copy"?undefined:item.cell.pairedEntityId}});return next};
+    if(placement.sourceType==="route"&&routeKind==="pipe")setPipeGrid(write);else setGrid(write);
+    if(placement.sourceType==="entity"){
+      if(placement.mode==="copy")setSimulation((previous)=>({...previous,inventories:{...previous.inventories,[placedId]:{input:{},output:{}}},processes:{...previous.processes,[placedId]:0}}));
       setSelectedEntityId(placedId);setSelectedTransportKey(null);
     }else{
       setSelectedEntityId(null);setSelectedTransportKey(targets[0]?.key??null);
       setSelectedTransportKind(routeKind);
     }
     setPickedEntity(null);setPlacementPreview(null);
-    setNotice(pickedEntity.mode === "copy" ? "独立副本已放置 · 处理进度与库存从空状态开始" : `${pickedEntity.label}已移动`);
+    setNotice(placement.mode === "copy" ? "独立副本已放置 · 处理进度与库存从空状态开始" : `${placement.label}已移动`);
     return true;
   }
 
@@ -1666,10 +1676,13 @@ export default function Home() {
   }
 
   function cancelRadialMenu(message?:string) {
+    const wasDragging=Boolean(radialGestureRef.current?.dragging||directDragPickedRef.current);
     if(radialHoldTimer.current!==null){window.clearTimeout(radialHoldTimer.current);radialHoldTimer.current=null}
     if(radialConfirmTimer.current!==null){window.clearTimeout(radialConfirmTimer.current);radialConfirmTimer.current=null}
     radialGestureRef.current=null;
+    directDragPickedRef.current=null;
     setRadialMenu(null);
+    if(wasDragging){setPickedEntity(null);setPlacementPreview(null)}
     if(message)setNotice(message);
   }
 
@@ -1684,10 +1697,16 @@ export default function Home() {
     if(entry){const [x,y]=entry[0].split(",").map(Number);deleteAt(x,y)}
   }
 
-  function startDeviceRadial(event:React.PointerEvent<HTMLButtonElement>,entityId:string) {
+  function directDragPoint(gesture:RadialGesture,picked:PickedEntity,clientX:number,clientY:number) {
+    const element=gridRef.current;if(!element)return null;
+    const width=Math.max(...picked.cells.map((cell)=>cell.dx))+1,height=Math.max(...picked.cells.map((cell)=>cell.dy))+1;
+    return deviceDragTarget(clientX,clientY,element.getBoundingClientRect(),cols,rows,width,height,gesture.grabDx,gesture.grabDy);
+  }
+
+  function startDeviceRadial(event:React.PointerEvent<HTMLButtonElement>,entityId:string,grabDx=0,grabDy=0) {
     if(!event.isPrimary||event.button!==0||beltBuildMode||pickedEntity||panning)return;
     cancelRadialMenu();
-    const gesture:RadialGesture={entityId,pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,currentX:event.clientX,currentY:event.clientY,opened:false};
+    const gesture:RadialGesture={entityId,pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,currentX:event.clientX,currentY:event.clientY,opened:false,dragging:false,grabDx,grabDy};
     radialGestureRef.current=gesture;
     setSelectedEntityId(entityId);setSelectedTransportKey(null);setSelectionMode(true);
     try{event.currentTarget.setPointerCapture(event.pointerId)}catch{}
@@ -1695,7 +1714,7 @@ export default function Home() {
       const current=radialGestureRef.current;
       if(!current||current.pointerId!==event.pointerId)return;
       const dx=current.currentX-current.startX,dy=current.currentY-current.startY;
-      if(Math.hypot(dx,dy)>RADIAL_PREOPEN_TOLERANCE_PX){radialGestureRef.current=null;return}
+      if(current.dragging||Math.hypot(dx,dy)>RADIAL_PREOPEN_TOLERANCE_PX){return}
       current.opened=true;
       const selection=radialSelection(dx,dy);
       setRadialMenu({entityId,x:current.startX,y:current.startY,pointerId:current.pointerId,active:selection.action,phase:"open",angle:selection.angle,distance:selection.distance});
@@ -1709,11 +1728,21 @@ export default function Home() {
     if(!gesture||gesture.pointerId!==event.pointerId)return;
     gesture.currentX=event.clientX;gesture.currentY=event.clientY;
     const dx=event.clientX-gesture.startX,dy=event.clientY-gesture.startY;
+    if(gesture.dragging){
+      event.preventDefault();
+      const picked=directDragPickedRef.current,point=picked?directDragPoint(gesture,picked,event.clientX,event.clientY):null;
+      if(point)setPlacementPreview(point);
+      return;
+    }
     if(!gesture.opened){
-      if(Math.hypot(dx,dy)>RADIAL_PREOPEN_TOLERANCE_PX){
+      if(Math.hypot(dx,dy)>DEVICE_DRAG_THRESHOLD_PX){
         if(radialHoldTimer.current!==null){window.clearTimeout(radialHoldTimer.current);radialHoldTimer.current=null}
-        radialGestureRef.current=null;
-        try{event.currentTarget.releasePointerCapture(event.pointerId)}catch{}
+        const picked=entityPlacement(gesture.entityId,"move")?.picked;
+        if(!picked){radialGestureRef.current=null;return}
+        gesture.dragging=true;directDragPickedRef.current=picked;setPickedEntity(picked);setSelectionMode(true);
+        const point=directDragPoint(gesture,picked,event.clientX,event.clientY);if(point)setPlacementPreview(point);
+        setNotice("直接拖动设备 · 松开以吸附到网格，冲突位置不会移动原设备");
+        event.preventDefault();
       }
       return;
     }
@@ -1728,6 +1757,14 @@ export default function Home() {
     if(radialHoldTimer.current!==null){window.clearTimeout(radialHoldTimer.current);radialHoldTimer.current=null}
     try{if(event.currentTarget.hasPointerCapture(event.pointerId))event.currentTarget.releasePointerCapture(event.pointerId)}catch{}
     radialGestureRef.current=null;
+    if(gesture.dragging){
+      event.preventDefault();event.stopPropagation();
+      const picked=directDragPickedRef.current,point=picked?directDragPoint(gesture,picked,event.clientX,event.clientY):null;
+      directDragPickedRef.current=null;
+      if(!picked||!point){setPickedEntity(null);setPlacementPreview(null);setNotice("设备拖动已取消 · 原位置保持不变");return}
+      if(!placePicked(point.x,point.y,picked)){setPickedEntity(null);setPlacementPreview(null)}
+      return;
+    }
     if(!gesture.opened)return;
     event.preventDefault();event.stopPropagation();
     const selection=radialSelection(event.clientX-gesture.startX,event.clientY-gesture.startY);
@@ -1947,7 +1984,7 @@ export default function Home() {
       const target = event.target as HTMLElement | null;
       if (target?.matches("input, textarea, select")) return;
       const key = event.key.toLowerCase();
-      if(key==="escape"&&radialMenu){event.preventDefault();cancelRadialMenu("轮盘操作已取消 · 设备保持选中");return}
+      if(key==="escape"&&(radialMenu||radialGestureRef.current)){event.preventDefault();cancelRadialMenu("设备操作已取消 · 原位置保持不变");return}
       if (key === "e") { event.preventDefault(); if(beltBuildMode)finishBeltBuild();else activateBeltMode("belt");return; }
       if (key === "q") { event.preventDefault(); if(beltBuildMode)finishBeltBuild();else activateBeltMode("pipe");return; }
       if (key === "x"&&!event.repeat) {event.preventDefault();toggleMarqueeMode();return}
@@ -2079,7 +2116,7 @@ export default function Home() {
 
         <section className="canvas-panel">
           <div className="canvas-toolbar">
-            <div><span className="live-dot" /> {canvasView==="blueprint"?"蓝图预览 / AIC-01":"产线流程图 / NODE OVERVIEW"}</div>
+            <div className="canvas-heading"><span className="live-dot" /><span>{canvasView==="blueprint"?"蓝图预览 / AIC-01":"产线流程图 / NODE OVERVIEW"}</span><details className="shortcut-guide"><summary>按键操作</summary><div><span><kbd>E</kbd>传送带</span><span><kbd>Q</kbd>管道</span><span><kbd>X</kbd>框选</span><span><kbd>拖动</kbd>移动设备</span><span><kbd>R</kbd>旋转</span><span><kbd>C</kbd>复制</span><span><kbd>Del</kbd>拆除</span><span><kbd>滚轮</kbd>缩放</span><span><kbd>中键拖动</kbd>平移画布</span><small>单击选择设备或线路 · 长按设备打开轮盘</small></div></details></div>
             <div className="canvas-controls">
               <div className="canvas-view-switch" role="group" aria-label="画布视图"><button className={canvasView==="blueprint"?"active":""} onClick={()=>setCanvasView("blueprint")}>蓝图</button><button className={canvasView==="flow"?"active":""} onClick={()=>setCanvasView("flow")}>流程图</button></div>
               {canvasView==="blueprint"?<><button onClick={() => setZoom(Math.max(.55, zoom-.1))}>−</button><span>{Math.round(zoom*100)}%</span><button onClick={() => setZoom(Math.min(1.7, zoom+.1))}>＋</button>
@@ -2161,7 +2198,7 @@ export default function Home() {
             <div className="axis axis-y">12<br/>08<br/>04<br/>00</div>
             <div ref={gridRef} className={`grid ${panning ? "is-panning" : ""} ${pickedEntity||pickedGroup?"is-placing":""} ${marqueeMode?"marquee-mode":""} ${running ? "simulation-running" : ""}`} style={{ gridTemplateColumns: `repeat(${cols}, 1fr)`, aspectRatio:`${cols}/${rows}`, transform:`translate(${pan.x}px,${pan.y}px) scale(${zoom})` }}
               onPointerDown={startMarquee} onPointerMove={updateMarquee} onPointerUp={finishMarquee} onPointerCancel={()=>setMarquee(null)}
-              onMouseMove={(event)=>{const rect=event.currentTarget.getBoundingClientRect();if(beltBuildMode){const x=Math.max(0,Math.min(cols-1,Math.floor((event.clientX-rect.left)/rect.width*cols)));const y=Math.max(0,Math.min(rows-1,Math.floor((event.clientY-rect.top)/rect.height*rows)));setBeltPreviewPoint((current)=>current?.x===x&&current?.y===y?current:{x,y})}if(pickedEntity||pickedGroup){const x=Math.max(0,Math.min(cols-pickedWidth,Math.floor((event.clientX-rect.left)/rect.width*cols)));const y=Math.max(0,Math.min(rows-pickedHeight,Math.floor((event.clientY-rect.top)/rect.height*rows)));setPlacementPreview({x,y})}}}
+              onMouseMove={(event)=>{const rect=event.currentTarget.getBoundingClientRect();if(beltBuildMode){const x=Math.max(0,Math.min(cols-1,Math.floor((event.clientX-rect.left)/rect.width*cols)));const y=Math.max(0,Math.min(rows-1,Math.floor((event.clientY-rect.top)/rect.height*rows)));setBeltPreviewPoint((current)=>current?.x===x&&current?.y===y?current:{x,y})}if((pickedEntity||pickedGroup)&&!directDragPickedRef.current){const x=Math.max(0,Math.min(cols-pickedWidth,Math.floor((event.clientX-rect.left)/rect.width*cols)));const y=Math.max(0,Math.min(rows-pickedHeight,Math.floor((event.clientY-rect.top)/rect.height*rows)));setPlacementPreview({x,y})}}}
               onMouseLeave={()=>{setHoveredEntity(null);setBeltPreviewPoint(null)}}>
               {pickedEntity&&placementPreview&&<><span className={`placement-snap ${placementValid?"valid":"invalid"}`} style={{left:`${placementPreview.x/cols*100}%`,top:`${placementPreview.y/rows*100}%`,width:`${pickedWidth/cols*100}%`,height:`${pickedHeight/rows*100}%`}}/><span className="placement-ghost" style={{left:`${placementPreview.x/cols*100}%`,top:`${placementPreview.y/rows*100}%`,width:`${pickedWidth/cols*100}%`,height:`${pickedHeight/rows*100}%`}}>{pickedEntity.sourceType==="entity"&&<><AssetThumb src={pickedEntity.image} label={pickedEntity.label}/><strong>{pickedEntity.label}</strong></>}</span></>}
               {pickedGroup&&placementPreview&&<><span className={`placement-snap group-placement ${groupPlacementValid?"valid":"invalid"}`} style={{left:`${placementPreview.x/cols*100}%`,top:`${placementPreview.y/rows*100}%`,width:`${pickedWidth/cols*100}%`,height:`${pickedHeight/rows*100}%`}}/><span className="placement-ghost group-ghost" style={{left:`${placementPreview.x/cols*100}%`,top:`${placementPreview.y/rows*100}%`,width:`${pickedWidth/cols*100}%`,height:`${pickedHeight/rows*100}%`}}><strong>{pickedGroup.label}</strong></span></>}
@@ -2227,7 +2264,7 @@ export default function Home() {
                 const depotItem=cell?.kind==="depot"?INDUSTRIAL_ITEMS.find((item)=>item.id===cell.itemId):null;
                 return <button key={index} className={`cell ${cell ? `placed ${cell.kind}` : ""} ${baseCell?.kind==="belt"?"belt":""} ${pipeCell?"pipe has-pipe":""} ${status} ${cell?.root?"entity-root":""} ${cellPorts.length?"entity-port":""} ${entitySelected ? "selected-entity" : ""} ${routeSelected?"selected-route-cell":""} ${groupSelected?"group-selected-cell":""} ${entityPicked ? "picked-entity" : ""}`} aria-label={`${x},${y}${baseCell ? ` ${baseCell.kind}` : ""}${pipeCell?" pipe":""}`}
                   aria-haspopup={baseCell&&!isTransport(baseCell.kind)?"menu":undefined}
-                  onPointerDown={(event)=>{if(!marqueeMode&&baseCell&&!isTransport(baseCell.kind))startDeviceRadial(event,baseCell.id)}}
+                  onPointerDown={(event)=>{if(!marqueeMode&&baseCell&&!isTransport(baseCell.kind))startDeviceRadial(event,baseCell.id,baseCell.partX??0,baseCell.partY??0)}}
                   onPointerMove={updateDeviceRadial}
                   onPointerUp={finishDeviceRadial}
                   onPointerCancel={(event)=>{if(radialGestureRef.current?.pointerId===event.pointerId)cancelRadialMenu("轮盘操作已取消 · 设备保持选中")}}
@@ -2250,13 +2287,13 @@ export default function Home() {
                     setNotice("设备只能从底部目录拖到画布上添加");
                   }} onMouseEnter={() => {if(beltBuildMode)setHoveredEntity(baseCell&&!isTransport(baseCell.kind)?{id:baseCell.id,x,y}:null)}} onMouseLeave={()=>{if(beltBuildMode&&hoveredEntity?.id===baseCell?.id)setHoveredEntity(null)}}
                   onContextMenu={(e) => {e.preventDefault();if(beltBuildMode){cancelBeltDraft();return}deleteAt(x,y,hoverTransport)}}>
-                    {baseCell && !isTransport(baseCell.kind) && <>{baseCell.root && <span style={footprintStyle} className={`cell-glyph root ${!machine ? "compact" : ""} ${baseCell.kind==="powerPole"?"power-pole":""} ${entitySelected?"selected-root":""} ${blockage==="input"?"input-blocked":blockage==="output"?"output-blocked":""}`}><b><AssetThumb src={machineImage??tools.find((t) => t.kind === baseCell.kind)?.image} label={tools.find((t) => t.kind === baseCell.kind)?.label??"设备"}/></b>{baseCell.kind==="depot"&&<span className="depot-source">{depotItem?<><AssetThumb src={depotItem.image} label={depotItem.name}/><small>{depotItem.name}</small></>:<small>未选择物品</small>}</span>}{machine && <span className="machine-overlay"><strong className="machine-name">{machine.name}</strong><span className="machine-recipe">{machine.recipe}</span><small className={status}>状态 · {machine.state}</small><small className={`power-state ${machineState?.powered?"powered":"unpowered"}`}>供电 · {machineState?.powered?"正常":"断开"}</small><em>阻塞 · {machine.blocked}</em><span className="machine-progress"><i><b className={processProgress===0?"cycle-reset":""} style={{width:`${processProgress}%`}}/></i><em>{processing ? `${processProgress}% · 剩余 ${remainingSeconds}s` : status==="unpowered" ? "等待供电 · --" : status==="environment" ? "等待酸性环境 · --" : status==="starved" ? "缺少输入 · --" : status==="blocked" ? blockage==="input"?"输入阻塞 · --":"输出阻塞 · --" : running ? "周期等待 · --" : "未启动 · --"}</em></span></span>}{baseCell.kind==="powerPole"&&<span className="power-pole-label"><strong>供电桩</strong><small>12 × 12</small></span>}</span>}{cellPorts.filter((port)=>!hiddenDirectPortKeys.has(port.key)).map((port)=><span key={port.key} className={`port-marker ${port.type} ${port.transport} side-${port.side} ${snapCandidate?.key===port.key?"snap-target":""} ${isPortConnected(grid,pipeGrid,port,directlyConnectedPortKeys)?"connected":""}`} title={`${port.transport==="pipe"?"管道介质":"固体"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`} aria-label={`${port.transport==="pipe"?"管道介质":"固体"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`}><span className="port-icon" aria-hidden="true"><i/><b/></span></span>)}{baseCell.root && status === "waiting" && <span className="wait-ring" />}</>}
+                    {baseCell && !isTransport(baseCell.kind) && <>{baseCell.root && <span style={footprintStyle} className={`cell-glyph root ${!machine ? "compact" : ""} ${baseCell.kind==="powerPole"?"power-pole":""} ${entitySelected?"selected-root":""} ${blockage==="input"?"input-blocked":blockage==="output"?"output-blocked":""}`}><b className="machine-visual"><AssetThumb src={machineImage??tools.find((t) => t.kind === baseCell.kind)?.image} label={tools.find((t) => t.kind === baseCell.kind)?.label??"设备"}/></b>{baseCell.kind==="depot"&&<span className="depot-source">{depotItem?<><AssetThumb src={depotItem.image} label={depotItem.name}/><small>{depotItem.name}</small></>:<small>未选择物品</small>}</span>}{machine && <span className="machine-overlay"><span className="machine-heading"><strong className="machine-name">{machine.name}</strong><i className={`machine-state ${status}`}>{machine.state}</i></span><span className="machine-recipe">{machine.recipe}</span><span className="machine-meta"><small className={`power-state ${machineState?.powered?"powered":"unpowered"}`}>{machineState?.powered?"供电正常":"供电断开"}</small><em className={`blockage-state ${blockage}`}>{blockage==="input"?"输入阻塞":blockage==="output"?"输出阻塞":"物流通畅"}</em></span><span className="machine-progress"><i><b className={processProgress===0?"cycle-reset":""} style={{width:`${processProgress}%`}}/></i><em>{processing ? `${processProgress}% · 剩余 ${remainingSeconds}s` : status==="unpowered" ? "等待供电 · --" : status==="environment" ? "等待酸性环境 · --" : status==="starved" ? "缺少输入 · --" : status==="blocked" ? blockage==="input"?"输入阻塞 · --":"输出阻塞 · --" : running ? "周期等待 · --" : "未启动 · --"}</em></span></span>}{!machine&&baseCell.kind!=="powerPole"&&baseCell.kind!=="depot"&&cellWidth*cellHeight>1&&<span className="device-caption"><strong>{tools.find((tool)=>tool.kind===baseCell.kind)?.label}</strong><small>{cellWidth} × {cellHeight}</small></span>}{baseCell.kind==="powerPole"&&<span className="power-pole-label"><strong>供电桩</strong><small>12 × 12</small></span>}</span>}{cellPorts.filter((port)=>!hiddenDirectPortKeys.has(port.key)).map((port)=><span key={port.key} className={`port-marker ${port.type} ${port.transport} side-${port.side} ${snapCandidate?.key===port.key?"snap-target":""} ${isPortConnected(grid,pipeGrid,port,directlyConnectedPortKeys)?"connected":""}`} title={`${port.transport==="pipe"?"管道介质":"固体"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`} aria-label={`${port.transport==="pipe"?"管道介质":"固体"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`}><span className="port-icon" aria-hidden="true"><i/><b/></span></span>)}{baseCell.root && status === "waiting" && <span className="wait-ring" />}</>}
                     {transport&&<span className="transport-tooltip"><span>{routeForCell?.itemId?<AssetThumb src={transport.image} label={transport.name}/>:<i className="empty-item-icon">--</i>}<strong>{transport.kind==="pipe"?"管道":"传送带"} · {transport.name}</strong></span><small>当前流速 {transport.rate}/min · 占用 {transport.cargoCount}/{transport.capacity} 单位</small><small>线路 {routeForCell?.cells.length??0} 格 · 基准运输耗时 {transport.travelSeconds.toFixed(1)}s</small><small>额定吞吐 {transport.kind==="pipe"?PIPE_ITEMS_PER_MINUTE:BELT_ITEMS_PER_MINUTE}/min · {transport.kind==="pipe"?"每格缓存 4 单位":"每格最多 1 件"}</small>{routeForCell&&stalledRouteIds.has(routeForCell.id)&&<small>{transport.targetConnected?"下游库存已满 · 线路满载阻塞":"末端未接输入口 · 线路满载阻塞"}</small>}{transport.connected&&!transport.targetConnected&&!transport.full&&<small>已连接输出口 · 内容将在末端逐格堆积</small>}{!transport.connected&&<small>未连接设备输出口 · 不会生成内容</small>}{secondaryTransport&&<><span className="tooltip-layer"><strong>下层传送带 · {secondaryTransport.name}</strong></span><small>当前流速 {secondaryTransport.rate}/min · 占用 {secondaryTransport.cargoCount}/{secondaryTransport.capacity}</small><small>再次单击可在管道/传送带之间切换选择</small></>}</span>}
                   </button>;
               })}
               <div className="port-overlay" aria-label="设备输入输出口显示层">
                 {resolvedPorts.filter((port)=>!hiddenDirectPortKeys.has(port.key)).map((port)=>{
-                  const left=port.cellX+(port.side===0?1:port.side===2?0:.5),top=port.cellY+(port.side===1?1:port.side===3?0:.5);
+                  const left=port.cellX+(port.side===0?1-PORT_VISUAL_INSET:port.side===2?PORT_VISUAL_INSET:.5),top=port.cellY+(port.side===1?1-PORT_VISUAL_INSET:port.side===3?PORT_VISUAL_INSET:.5);
                   return <span key={port.key} style={{left:`${left/cols*100}%`,top:`${top/rows*100}%`}} className={`port-marker global-port ${isLogistics(port.entityKind)?"compact-port":""} ${port.type} ${port.transport} side-${port.side} ${snapCandidate?.key===port.key?"snap-target":""} ${isPortConnected(grid,pipeGrid,port,directlyConnectedPortKeys)?"connected":""}`} title={`${port.transport==="pipe"?"液体":"固体"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`} aria-label={`${port.transport==="pipe"?"液体":"固体"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`}><span className="port-icon" aria-hidden="true"><i/><b/></span></span>;
                 })}
               </div>
