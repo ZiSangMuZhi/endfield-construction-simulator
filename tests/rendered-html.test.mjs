@@ -111,10 +111,11 @@ test("maps the long-press radial gesture to stable directional actions", async (
 });
 
 test("supports layered belt and pipe planning with draggable facilities", async () => {
-  const [page, css, timing] = await Promise.all([
+  const [page, css, timing, worksheet] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../lib/belt-timing.ts", import.meta.url), "utf8"),
+    readFile(new URL("../docs/EQUIPMENT_RECIPE_REQUIREMENTS_WORKSHEET.md", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /kind: "powerPole"[\s\S]*?2×2 · 供电范围 12×12/);
@@ -231,6 +232,12 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(page, /itemStats:savedSimulation\.itemStats\?\?\[\]/);
   assert.match(page, /function resetSimulation\(\)/);
   assert.match(page, /setSimulation\(emptySimulationState\(\)\)/);
+  assert.match(page, /function clearCanvas\(\)/);
+  assert.match(page, /window\.confirm\("清空画布会移除所有设备、传送带、管道和当前模拟数据/);
+  assert.match(page, /className="clear-action" onClick=\{clearCanvas\}>清空画布/);
+  assert.match(page, /const prioritizedProductionStates=productionStates\.map/);
+  assert.match(page, /Number\(b\.state\.status==="blocked"\)-Number\(a\.state\.status==="blocked"\)/);
+  assert.match(page, /prioritizedProductionStates\.map\(\(\{state,sequence\}\)=>/);
   assert.match(page, /type MachineRecipe =/);
   assert.match(page, /function setMachineRecipe\(entityId:string,recipeId:string\)/);
   assert.match(page, /className="mode-switch"/);
@@ -283,6 +290,7 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(css, /\.content-placeholder\{/);
   assert.match(css, /\.flow-placeholder\{/);
   assert.match(css, /\.recipe-control>\.recipe-rate\{/);
+  assert.match(css, /\.top-actions \.clear-action/);
   assert.match(page, /function toggleMarqueeMode\(\)/);
   assert.match(page, /function prepareGroupPlacement/);
   assert.match(page, /function rotateGroupSelection/);
@@ -295,6 +303,10 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(timing, /BELT_ITEMS_PER_MINUTE = 30/);
   assert.match(timing, /PIPE_ITEMS_PER_MINUTE = 120/);
   assert.match(timing, /BELT_CELL_TRAVEL_TICKS = BELT_HEADWAY_TICKS/);
+  for (const kind of ["refiner","crusher","fitter","molder","seedPicker","planter","waterTreatment","filler","dismantler","sealer","grinder","reactor","purifier","forge","gearAssembler","waterPump","depot","storagePort","splitter","merger","logisticsBridge","pipeSplitter","pipeMerger","pipeBridge","powerPole"]) {
+    assert.ok(worksheet.includes("`"+kind+"`"));
+  }
+  assert.match(worksheet, /全局生产规则待确认/);
   assert.match(timing, /return cellCount \* BELT_CELL_TRAVEL_TICKS/);
   await access(new URL("../public/assets/machines/supply-pole.webp", import.meta.url));
   await access(new URL("../public/assets/machines/gear-assembler.webp", import.meta.url));

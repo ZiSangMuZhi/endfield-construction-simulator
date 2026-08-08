@@ -842,6 +842,7 @@ export default function Home() {
   const tick=simulation.tick;
   const elapsedSeconds=Math.floor(tick/SIM_TICKS_PER_SECOND);
   const productionStates = Object.values(machineStates);
+  const prioritizedProductionStates=productionStates.map((state,index)=>({state,sequence:index+1})).sort((a,b)=>Number(b.state.status==="blocked")-Number(a.state.status==="blocked")||a.sequence-b.sequence);
   const selectedEntity = selectedEntityId ? Object.values(grid).find((cell)=>cell.id===selectedEntityId) : null;
   const radialEntity = radialMenu ? Object.values(grid).find((cell)=>cell.id===radialMenu.entityId) : null;
   const radialEntityLabel=radialEntity?tools.find((tool)=>tool.kind===radialEntity.kind)?.label??"设备":"设备";
@@ -1464,6 +1465,15 @@ export default function Home() {
     setNotice("模拟已重置 · 蓝图、设备配方与仓库取货口配置已保留");
   }
 
+  function clearCanvas() {
+    if(!window.confirm("清空画布会移除所有设备、传送带、管道和当前模拟数据。已保存的本机蓝图不会被删除。是否继续？"))return;
+    cancelRadialMenu();catalogDragKindRef.current=null;
+    setRunning(false);setGrid({});setPipeGrid({});setSimulation(emptySimulationState());
+    setSelected("belt");setSelectionMode(false);setMarqueeMode(false);setMarquee(null);setGroupSelection(null);setPickedEntity(null);setPickedGroup(null);setPlacementPreview(null);
+    setSelectedEntityId(null);setSelectedTransportKey(null);setBeltBuildMode(null);setBeltDraft(null);setBeltPreviewPoint(null);setHoveredEntity(null);setCatalogDrag(null);setCatalogPreview(null);
+    setNotice("画布已清空 · 本机已保存蓝图仍可通过“载入”恢复");
+  }
+
   function load() {
     const saved = localStorage.getItem("endfield-blueprint-v3")??localStorage.getItem("endfield-blueprint-v2")??localStorage.getItem("endfield-blueprint-v1");
     if (saved) {
@@ -1480,6 +1490,7 @@ export default function Home() {
         <div className="brand-copy"><strong>编辑蓝图</strong><span>ENDFIELD INDUSTRIES / AIC BLUEPRINT</span></div>
         <div className="top-actions">
           <button onClick={load}>载入</button><button onClick={save}>保存蓝图</button>
+          <button className="clear-action" onClick={clearCanvas}>清空画布</button>
           <button className="reset-action" onClick={resetSimulation}>重置模拟</button>
           <button className={running ? "primary danger" : "primary"} onClick={() => setRunning(!running)}>{running ? "停止模拟" : "开始模拟"}</button>
         </div>
@@ -1660,7 +1671,7 @@ export default function Home() {
           <div className="panel-heading"><span>生产监控</span><small>LIVE / 02</small></div>
           <div className="metric-grid"><div><small>设备</small><strong>{counts.devices}</strong></div><div><small>物流格</small><strong>{counts.belts}<span> 带</span> / {counts.pipes}<span> 管</span></strong></div><div><small>已供电</small><strong>{productionStates.filter((state)=>state.powered).length}<span> / {productionStates.length}</span></strong></div><div><small>效率</small><strong>{running&&productionStates.length ? Math.round(productionStates.filter((state)=>state.status==="running").length/productionStates.length*100) : "—"}<span>%</span></strong></div></div>
           <div className="section-title"><span>设备状态</span><small>{running ? "SIMULATION ACTIVE" : "SIMULATION PAUSED"}</small></div>
-          {productionStates.map((state,index)=>{const stateText=state.status==="running"?"生产中":state.status==="waiting"?"周期等待":state.status==="starved"?"缺少输入":state.status==="blocked"?"输出阻塞":state.status==="unpowered"?"未供电":"暂停",definition=MACHINE_DEFINITIONS[state.kind],currentRecipe=activeRecipe(definition,state.recipeId);return <div key={state.id} className={`machine-card ${state.status==="running"?"good":state.status!=="idle"?"warn":""}`}><div className="machine-icon"><AssetThumb src={definition.image} label={definition.name}/></div><div><strong>{definition.name} #{String(index+1).padStart(2,"0")}</strong><small>{modeLabel(currentRecipe.mode)} · {currentRecipe.name} · {stateText} · {state.powered?"供电正常":"供电断开"}</small></div><em>{state.status==="running"?`${state.progress}%`:stateText}</em></div>})}
+          {prioritizedProductionStates.map(({state,sequence})=>{const stateText=state.status==="running"?"生产中":state.status==="waiting"?"周期等待":state.status==="starved"?"缺少输入":state.status==="blocked"?"输出阻塞":state.status==="unpowered"?"未供电":"暂停",definition=MACHINE_DEFINITIONS[state.kind],currentRecipe=activeRecipe(definition,state.recipeId);return <div key={state.id} className={`machine-card ${state.status==="running"?"good":state.status!=="idle"?"warn":""}`}><div className="machine-icon"><AssetThumb src={definition.image} label={definition.name}/></div><div><strong>{definition.name} #{String(sequence).padStart(2,"0")}</strong><small>{modeLabel(currentRecipe.mode)} · {currentRecipe.name} · {stateText} · {state.powered?"供电正常":"供电断开"}</small></div><em>{state.status==="running"?`${state.progress}%`:stateText}</em></div>})}
           <div className="section-title"><span>产销统计</span><small>ROLLING 5 MINUTES</small></div>
           <section className="production-stats" aria-label="产线物品产出量与消耗量统计">
             {involvedStatsItems.length?<>
