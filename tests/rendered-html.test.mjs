@@ -370,7 +370,9 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.ok(groupPlacementBranch>=0&&marqueeGuard>groupPlacementBranch);
   assert.match(page, /const DEFAULT_COLS = 32/);
   assert.match(page, /const DEFAULT_ROWS = 32/);
-  assert.match(page, /const MAX_CANVAS_SIZE = 48/);
+  assert.match(page, /const MAX_CANVAS_SIZE = 72/);
+  assert.match(page, /data-machine-detail=\{machineDetail\}/);
+  assert.match(page, /canvasDetailScale<\.68\?"minimal":canvasDetailScale<1\.15\?"compact":"full"/);
   assert.match(page, /JSON\.stringify\(\{cols,rows,grid,pipeGrid/);
   assert.match(page, /function rotateGroupSelection/);
   assert.match(page, /function deleteGroupSelection/);
@@ -419,6 +421,8 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(css, /\.port-overlay\{[^}]*z-index:36/);
   assert.match(css, /\.port-overlay \.global-port\{width:13px!important;height:22px!important/);
   assert.match(css, /\.machine-heading\{/);
+  assert.match(css, /\.machine-detail-compact \.machine-progress>em\{/);
+  assert.match(css, /\.machine-detail-minimal \.machine-recipe/);
   assert.match(css, /\.shortcut-guide>div\{/);
   assert.match(css, /\.flow-node\{/);
   assert.match(css, /\.flow-link\.pipe path/);

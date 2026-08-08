@@ -37,6 +37,7 @@ const localBindingConfig = {
 
 export default defineConfig(async () => {
   if (isGitHubPagesBuild) {
+    process.env.NEXT_PUBLIC_BASE_PATH ??= gitHubPagesBasePath.slice(0, -1);
     return {
       base: gitHubPagesBasePath,
       plugins: [vinext()],
