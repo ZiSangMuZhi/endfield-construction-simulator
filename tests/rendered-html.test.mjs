@@ -128,7 +128,7 @@ test("keeps each logistics bridge axis strictly opposite and independent", async
 
 test("supports layered belt and pipe planning with draggable facilities", async () => {
   const [page, css, timing, worksheet] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/planner-client.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../lib/belt-timing.ts", import.meta.url), "utf8"),
     readFile(new URL("../docs/EQUIPMENT_RECIPE_REQUIREMENTS_WORKSHEET.md", import.meta.url), "utf8"),
