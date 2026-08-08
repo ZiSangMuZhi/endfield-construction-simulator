@@ -1816,6 +1816,13 @@ export default function Home() {
     setNotice(`${item.name}已放入${sharedBuffer?"内部暂存槽":side==="input"?"输入":"产出"} · 超出容量或槽位上限的数量不会写入`);
   }
 
+  function collectAllInventory(entityId:string) {
+    const current=simulation.inventories[entityId]??{input:{},output:{}},amount=totalInventory(current.input)+totalInventory(current.output);
+    setSimulation((previous)=>({...previous,inventories:{...previous.inventories,[entityId]:{input:{},output:{}}}}));
+    const label=tools.find((tool)=>tool.kind===entityKinds.get(entityId))?.label??"设备";
+    setNotice(amount>0?`${label}已全部收取 · 清空 ${amount} 单位库存`:`${label}当前没有可收取库存`);
+  }
+
   function deleteAt(x:number,y:number,preferredKind?:TransportKind) {
     const key=keyOf(x,y),target=preferredKind==="pipe"?pipeGrid[key]:preferredKind==="belt"?grid[key]:grid[key]??pipeGrid[key];if(!target)return;
     const route=isTransport(target.kind)?flowRoutes.find((candidate)=>candidate.kind===target.kind&&candidate.cells.some((point)=>point.x===x&&point.y===y)):undefined;
@@ -2034,6 +2041,7 @@ export default function Home() {
                 </section>
               </>}
               <section className="inventory-inject"><strong>{selectedSharedBuffer?"直接放入内部暂存槽":"直接放入库存"}</strong><select aria-label="库存物品" value={inventoryItemId} onChange={(event)=>setInventoryItemId(event.target.value)}>{INDUSTRIAL_ITEMS.map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</select><input aria-label="放入数量" type="number" min="1" max="60" value={inventoryAmount} onChange={(event)=>setInventoryAmount(Math.max(1,Number(event.target.value)))}/><div><button onClick={()=>addInventory(selectedEntityId,"input",inventoryItemId,inventoryAmount)}>{selectedSharedBuffer?"放入暂存槽":"放入输入库存"}</button>{!selectedSharedBuffer&&<button onClick={()=>addInventory(selectedEntityId,"output",inventoryItemId,inventoryAmount)}>放入产出库存</button>}</div></section>
+              <section className="inventory-collect"><span><strong>设备库存操作</strong><small>{selectedSharedBuffer?"清空全部内部暂存槽":"清空输入与产出库存"}</small></span><button aria-label="全部收取设备库存" disabled={totalInventory(selectedInventory.input)+totalInventory(selectedInventory.output)===0} onClick={()=>collectAllInventory(selectedEntityId)}>全部收取 <b>{totalInventory(selectedInventory.input)+totalInventory(selectedInventory.output)}</b></button></section>
               <footer>{inventoryFullIds.has(selectedEntityId)?"库存或暂存槽已阻塞 · 相连物流暂停，设备边框标红":selectedSharedBuffer?"所有物品共用暂存槽 · 错误物品同样占用槽位":"固体与管道介质输入分别计容 · 任何物品均可进入并真实占用库存"}</footer>
             </aside>}
             <div className="axis axis-y">12<br/>08<br/>04<br/>00</div>

@@ -233,6 +233,9 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(page, /setMachineOutputFilter/);
   assert.match(page, /setExpandedReactorAutoUnblock/);
   assert.match(page, /autoMultiRecipeUnblock/);
+  assert.match(page, /function collectAllInventory/);
+  assert.match(page, /aria-label="全部收取设备库存"/);
+  assert.match(page, /\[entityId\]:\{input:\{\},output:\{\}\}/);
   assert.match(page, /selectedSolidInputTotal/);
   assert.match(page, /selectedFluidInputTotal/);
   assert.match(page, /type BeltJoin/);
@@ -359,6 +362,7 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(page, /cellPorts\.filter\(\(port\)=>!hiddenDirectPortKeys\.has\(port\.key\)\)/);
   assert.match(page, /isPortConnected\(grid,pipeGrid,port,directlyConnectedPortKeys\)/);
   assert.match(css, /\.marquee-box/);
+  assert.match(css, /\.inventory-collect/);
   assert.match(css, /\.cell\.logisticsBridge \.port-marker/);
   assert.match(page, /const \[canvasView,setCanvasView\]=useState<CanvasView>\("blueprint"\)/);
   assert.match(page, /className="flow-diagram"/);
