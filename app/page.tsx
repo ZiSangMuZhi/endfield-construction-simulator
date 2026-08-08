@@ -3,6 +3,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BELT_HEADWAY_TICKS, BELT_ITEMS_PER_MINUTE, PIPE_HEADWAY_TICKS, PIPE_ITEMS_PER_MINUTE, PIPE_LANE_PROFILE, SIM_TICK_MS, SIM_TICKS_PER_SECOND, advanceBeltLane, advancePipeLane, beltLaneCanAccept, beltLaneIsFull, beltTravelSeconds, nextLaneReadyTick, pipeLaneCanAccept, pipeLaneIsFull } from "../lib/belt-timing";
+import { bridgePortsPair, pairedBridgeOutput } from "../lib/bridge-routing";
 import { RADIAL_CONFIRM_DELAY_MS, RADIAL_HOLD_DELAY_MS, RADIAL_PREOPEN_TOLERANCE_PX, RadialAction, radialSelection } from "../lib/radial-menu";
 
 type TransportKind = "belt" | "pipe";
@@ -59,6 +60,9 @@ type TransitItem = { id:string; routeId:string; itemId:string; position:number; 
 type ItemStatSample = { second:number; produced:Record<string,number>; consumed:Record<string,number> };
 type ItemStatsChart = { produced:number[]; consumed:number[]; producedPath:string; consumedPath:string; producedTotal:number; consumedTotal:number };
 type SimulationState = { tick:number; inventories:Record<string,DeviceInventory>; processes:Record<string,number>; transits:TransitItem[]; routeCursor:Record<string,number>; laneReadyAt:Record<string,number>; routeTransfers:Record<string,number[]>; itemStats:ItemStatSample[] };
+type CanvasView = "blueprint" | "flow";
+type FlowGraphNode = { id:string; kind:Kind; label:string; image?:string; detail:string; status:string; sourceX:number; sourceY:number; x:number; y:number };
+type FlowGraphEdge = { id:string; from:string; to:string; kind:TransportKind; itemName:string };
 const SOLID_INPUT_CAPACITY=50;
 const FLUID_INPUT_CAPACITY=50;
 const OUTPUT_CAPACITY=60;
@@ -68,7 +72,7 @@ const STATS_SAMPLE_INTERVAL_SECONDS=5;
 const STATS_CHART_POINTS=Math.floor(STATS_HISTORY_SECONDS/STATS_SAMPLE_INTERVAL_SECONDS);
 const STATS_RETENTION_SECONDS=STATS_HISTORY_SECONDS+STATS_SMOOTHING_SECONDS;
 const totalInventory=(bucket:Record<string,number>)=>Object.values(bucket).reduce((sum,quantity)=>sum+quantity,0);
-const inputCapacityFor=(kind:Kind|undefined,transport:TransportKind)=>kind==="storagePort"?240:["splitter","merger","logisticsBridge","pipeSplitter","pipeMerger","pipeBridge"].includes(kind??"")?30:transport==="pipe"?FLUID_INPUT_CAPACITY:SOLID_INPUT_CAPACITY;
+const inputCapacityFor=(kind:Kind|undefined,transport:TransportKind)=>kind==="storagePort"?240:kind==="logisticsBridge"||kind==="pipeBridge"?0:["splitter","merger","pipeSplitter","pipeMerger"].includes(kind??"")?30:transport==="pipe"?FLUID_INPUT_CAPACITY:SOLID_INPUT_CAPACITY;
 const secondsToTicks=(seconds:number)=>Math.round(seconds*SIM_TICKS_PER_SECOND);
 const addQuantity=(bucket:Record<string,number>,itemId:string,amount:number)=>{bucket[itemId]=(bucket[itemId]??0)+amount};
 const modeLabel=(mode:MachineMode)=>mode==="fluid"?"液体模式":"固体模式";
@@ -513,10 +517,10 @@ const tools: { kind: Kind; label: string; type:"tool"|"device"; category?:Device
   { kind: "storagePort", label: "仓库存货口", type:"device", category:"仓储存取", glyph: "ST", desc: "1×3 · 回收入库", image:"/assets/machines/storage-port.webp" },
   { kind: "splitter", label: "分流器", type:"device", category:"仓储存取", glyph: "S", desc: "1 入 · 3 出", image:"/assets/machines/splitter.webp" },
   { kind: "merger", label: "汇流器", type:"device", category:"仓储存取", glyph: "M", desc: "3 入 · 1 出", image:"/assets/machines/merger.webp" },
-  { kind: "logisticsBridge", label: "物流桥", type:"device", category:"仓储存取", glyph: "BR", desc: "两条传送带正交跨越", image:"/assets/machines/logistics-bridge.webp" },
+  { kind: "logisticsBridge", label: "物流桥", type:"device", category:"仓储存取", glyph: "BR", desc: "两轴独立直通 · 无库存", image:"/assets/machines/logistics-bridge.webp" },
   { kind: "pipeSplitter", label: "管道分流器", type:"device", category:"仓储存取", glyph: "PS", desc: "1 入 · 至多 3 出", image:"/assets/machines/pipe-splitter.svg" },
   { kind: "pipeMerger", label: "管道汇流器", type:"device", category:"仓储存取", glyph: "PM", desc: "至多 3 入 · 1 出", image:"/assets/machines/pipe-merger.svg" },
-  { kind: "pipeBridge", label: "管道桥", type:"device", category:"仓储存取", glyph: "PB", desc: "两条管道正交跨越", image:"/assets/machines/pipe-bridge.svg" },
+  { kind: "pipeBridge", label: "管道桥", type:"device", category:"仓储存取", glyph: "PB", desc: "两轴独立直通 · 无库存", image:"/assets/machines/pipe-bridge.svg" },
   { kind: "refiner", label: "精炼炉", type:"device", category:"基础生产", glyph: "R", desc: "矿石 → 金属块", image:"/assets/machines/refinery.webp" },
   { kind: "crusher", label: "粉碎机", type:"device", category:"基础生产", glyph: "CR", desc: "3×3 · 固体粉碎", image:"/assets/machines/crusher.webp" },
   { kind: "fitter", label: "配件机", type:"device", category:"基础生产", glyph: "F", desc: "金属块 → 零件", image:"/assets/machines/assembler.webp" },
@@ -563,6 +567,7 @@ const isTransport = (kind?: Kind) => kind === "belt" || kind === "pipe";
 const BELT_LOGISTICS = new Set<Kind>(["splitter","merger","logisticsBridge"]);
 const PIPE_LOGISTICS = new Set<Kind>(["pipeSplitter","pipeMerger","pipeBridge"]);
 const isLogistics=(kind:Kind)=>BELT_LOGISTICS.has(kind)||PIPE_LOGISTICS.has(kind);
+const isBridge=(kind:Kind|undefined)=>kind==="logisticsBridge"||kind==="pipeBridge";
 const logisticsTransport=(kind:Kind):TransportKind|null=>BELT_LOGISTICS.has(kind)?"belt":PIPE_LOGISTICS.has(kind)?"pipe":null;
 const straightDirection=(cell?:Cell):Direction|null=>cell&&isTransport(cell.kind)&&cell.entry===opposite(cell.rotation)?cell.rotation:null;
 const bridgeRotationFor=(first:Direction,second:Direction):Direction|null=>{
@@ -640,6 +645,7 @@ export default function Home() {
   const [cols, setCols] = useState(DEFAULT_COLS);
   const [rows, setRows] = useState(DEFAULT_ROWS);
   const [gridOpacity, setGridOpacity] = useState(0.1);
+  const [canvasView,setCanvasView]=useState<CanvasView>("blueprint");
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [panning, setPanning] = useState<{ x:number; y:number; ox:number; oy:number } | null>(null);
@@ -737,14 +743,25 @@ export default function Home() {
     for(let cursor=0;cursor<propagationQueue.length;cursor++){
       const upstream=propagationQueue[cursor],targetPort=upstream.targetPort;
       if(!targetPort||!isLogistics(targetPort.entityKind))continue;
-      const isBridge=targetPort.entityKind==="logisticsBridge"||targetPort.entityKind==="pipeBridge";
+      const targetIsBridge=targetPort.entityKind==="logisticsBridge"||targetPort.entityKind==="pipeBridge";
       (outgoingByEntity.get(targetPort.entityId)??[]).forEach((route)=>{
-        if(route.itemId||(isBridge&&targetPort.index!==route.sourcePort?.index))return;
+        if(route.itemId||(targetIsBridge&&!bridgePortsPair(targetPort,route.sourcePort)))return;
         route.itemId=upstream.itemId;route.itemName=upstream.itemName;route.itemImage=upstream.itemImage;propagationQueue.push(route);
       });
     }
     return routes;
   },[flowRoutes,resolvedPorts,directPortConnections,grid]);
+  const connectedRouteById=useMemo(()=>new Map(connectedFlowRoutes.map((route)=>[route.id,route])),[connectedFlowRoutes]);
+  const bridgeForwardRoutes=useMemo(()=>{
+    const forwards=new Map<string,ConnectedFlowRoute>();
+    connectedFlowRoutes.forEach((incoming)=>{
+      const inputPort=incoming.targetPort;
+      if(!inputPort||!isBridge(inputPort.entityKind))return;
+      const outgoing=pairedBridgeOutput(incoming,connectedFlowRoutes);
+      if(outgoing)forwards.set(incoming.id,outgoing);
+    });
+    return forwards;
+  },[connectedFlowRoutes]);
   const connectedRouteByCell=useMemo(()=>{
     const index=new Map<string,ConnectedFlowRoute>();
     connectedFlowRoutes.forEach((route)=>{if(!route.direct)route.cells.forEach(({x,y})=>index.set(`${route.kind}:${keyOf(x,y)}`,route))});
@@ -793,6 +810,7 @@ export default function Home() {
         const [x,y]=key.split(",").map(Number),kind=cell.kind as ProductionKind;
         const entity=productionEntities.get(cell.id)??{kind,positions:[],cell};entity.positions.push({x,y});productionEntities.set(cell.id,entity);
       });
+      entityKinds.forEach((kind,id)=>{if(isBridge(kind))delete inventories[id]});
       productionEntities.forEach((entity,id)=>{
         const definition=MACHINE_DEFINITIONS[entity.kind],currentRecipe=activeRecipe(definition,entity.cell.recipeId),inventory=ensureInventory(id);
         const minX=Math.min(...entity.positions.map(({x})=>x)),minY=Math.min(...entity.positions.map(({y})=>y));
@@ -809,18 +827,30 @@ export default function Home() {
       });
       const previousByRoute=new Map<string,TransitItem[]>();
       previous.transits.forEach((transit)=>{const lane=previousByRoute.get(transit.routeId)??[];lane.push(transit);previousByRoute.set(transit.routeId,lane)});
-      const activeTransits:TransitItem[]=[];
       const activeByRoute=new Map<string,TransitItem[]>();
       connectedFlowRoutes.forEach((route)=>{
         const lane=previousByRoute.get(route.id)??[];
-        const target=route.targetPort?ensureInventory(route.targetPort.entityId):null;
+        const target=route.targetPort&&!isBridge(route.targetPort.entityKind)?ensureInventory(route.targetPort.entityId):null;
         const canExit=Boolean(target&&inputTotalFor(target.input,route.kind)<inputCapacityFor(entityKinds.get(route.targetPort!.entityId),route.kind));
          const advanced=route.kind==="pipe"?advancePipeLane(lane,route.cells.length,canExit):advanceBeltLane(lane,route.cells.length,canExit);
-        activeByRoute.set(route.id,advanced.active);activeTransits.push(...advanced.active);
+        activeByRoute.set(route.id,advanced.active);
         if(target)advanced.delivered.forEach((transit)=>{target.input[transit.itemId]=(target.input[transit.itemId]??0)+1});
       });
+      bridgeForwardRoutes.forEach((outgoing,incomingId)=>{
+        const incoming=connectedRouteById.get(incomingId),incomingLane=activeByRoute.get(incomingId)??[],outgoingLane=activeByRoute.get(outgoing.id)??[];
+        if(!incoming||!incomingLane.length||(laneReadyAt[outgoing.id]??0)>tick)return;
+        const pitch=incoming.kind==="pipe"?PIPE_LANE_PROFILE.itemPitch:1;
+        const leader=incomingLane.reduce((front,candidate)=>candidate.position>front.position?candidate:front);
+        if(leader.position<incoming.cells.length-pitch/2-1e-9)return;
+        const canAccept=outgoing.kind==="pipe"?pipeLaneCanAccept(outgoingLane,outgoing.cells.length):beltLaneCanAccept(outgoingLane,outgoing.cells.length);
+        if(!canAccept)return;
+        activeByRoute.set(incomingId,incomingLane.filter((transit)=>transit.id!==leader.id));
+        activeByRoute.set(outgoing.id,[...outgoingLane,{...leader,routeId:outgoing.id,position:0,previousPosition:0}]);
+        laneReadyAt[outgoing.id]=nextLaneReadyTick(tick,outgoing.kind==="pipe"?PIPE_HEADWAY_TICKS:BELT_HEADWAY_TICKS);
+        routeTransfers[outgoing.id]=[...(routeTransfers[outgoing.id]??[]),tick];
+      });
       const groups=new Map<string,ConnectedFlowRoute[]>();
-      connectedFlowRoutes.forEach((route)=>{if(!route.valid||!route.itemId||!route.sourcePort)return;const list=groups.get(route.sourcePort.entityId)??[];list.push(route);groups.set(route.sourcePort.entityId,list)});
+      connectedFlowRoutes.forEach((route)=>{if(!route.valid||!route.itemId||!route.sourcePort||isBridge(route.sourcePort.entityKind))return;const list=groups.get(route.sourcePort.entityId)??[];list.push(route);groups.set(route.sourcePort.entityId,list)});
       groups.forEach((routes,sourceId)=>{
         const sourceKind=entityKinds.get(sourceId),sourceInventory=ensureInventory(sourceId);
         const ready=new Set(routes.filter((route)=>{
@@ -840,7 +870,7 @@ export default function Home() {
         });
         dispatched.forEach((route)=>{
           const transit={id:crypto.randomUUID(),routeId:route.id,itemId:route.itemId!,position:0,previousPosition:0};
-          activeTransits.push(transit);activeByRoute.set(route.id,[...(activeByRoute.get(route.id)??[]),transit]);
+          activeByRoute.set(route.id,[...(activeByRoute.get(route.id)??[]),transit]);
           laneReadyAt[route.id]=nextLaneReadyTick(tick,route.kind==="pipe"?PIPE_HEADWAY_TICKS:BELT_HEADWAY_TICKS);
           routeTransfers[route.id]=[...(routeTransfers[route.id]??[]),tick];
           if(sourceKind==="depot")addQuantity(producedThisTick,route.itemId!,1);
@@ -857,11 +887,12 @@ export default function Home() {
       }
       if(itemStats[0]?.second<second-STATS_RETENTION_SECONDS)itemStats=itemStats.filter((sample)=>sample.second>=second-STATS_RETENTION_SECONDS);
       // Storage-port delivery is inventory transfer, not consumption; recipe removal is the only consumption event.
+      const activeTransits=[...activeByRoute.values()].flat();
       return {tick,inventories,processes,transits:activeTransits,routeCursor,laneReadyAt,routeTransfers,itemStats};
       });
     },SIM_TICK_MS);
     return ()=>window.clearInterval(timer);
-  },[running,grid,connectedFlowRoutes,powerZones]);
+  },[running,grid,connectedFlowRoutes,connectedRouteById,bridgeForwardRoutes,powerZones]);
   const machineStates = useMemo<Record<string,MachineState>>(()=>{
     const entities = new Map<string,{cell:Cell;positions:{x:number;y:number;cell:Cell}[]}>();
     Object.entries(grid).forEach(([key,cell])=>{
@@ -887,6 +918,61 @@ export default function Home() {
     });
     return states;
   },[grid,powerZones,simulation.inventories,simulation.processes,running]);
+  const flowGraph=useMemo(()=>{
+    const visibleKinds=new Set<Kind>([...Object.keys(MACHINE_DEFINITIONS) as ProductionKind[],"depot","storagePort","splitter","merger","pipeSplitter","pipeMerger"]);
+    const entities=new Map<string,{kind:Kind;cell:Cell;positions:Point[]}>();
+    Object.entries(grid).forEach(([key,cell])=>{
+      if(!visibleKinds.has(cell.kind))return;
+      const [x,y]=key.split(",").map(Number),entity=entities.get(cell.id)??{kind:cell.kind,cell,positions:[]};
+      if(cell.root)entity.cell=cell;entity.positions.push({x,y});entities.set(cell.id,entity);
+    });
+    const baseNodes=[...entities.entries()].map(([id,entity])=>{
+      const definition=entity.kind in MACHINE_DEFINITIONS?MACHINE_DEFINITIONS[entity.kind as ProductionKind]:undefined;
+      const currentRecipe=definition?activeRecipe(definition,entity.cell.recipeId):undefined;
+      const tool=tools.find((candidate)=>candidate.kind===entity.kind);
+      const status=entity.kind==="depot"?"外部供给":entity.kind==="storagePort"?"仓库存货":definition?"工业设备":"物流节点";
+      return {id,kind:entity.kind,label:definition?.name??tool?.label??"设备",image:definition?.image??tool?.image,detail:currentRecipe?.name??tool?.desc??"",status,sourceX:Math.min(...entity.positions.map((point)=>point.x)),sourceY:Math.min(...entity.positions.map((point)=>point.y)),x:0,y:0};
+    });
+    const visibleIds=new Set(baseNodes.map((node)=>node.id)),edgeKeys=new Set<string>();
+    const edges:FlowGraphEdge[]=[];
+    const visibleTargetFor=(start:ConnectedFlowRoute)=>{
+      let route:ConnectedFlowRoute|undefined=start;
+      const visited=new Set<string>();
+      while(route?.targetPort&&!visited.has(route.id)){
+        visited.add(route.id);
+        if(visibleIds.has(route.targetPort.entityId))return route.targetPort.entityId;
+        if(!isBridge(route.targetPort.entityKind))return null;
+        route=bridgeForwardRoutes.get(route.id);
+      }
+      return null;
+    };
+    connectedFlowRoutes.forEach((route)=>{
+      const from=route.sourcePort?.entityId;
+      if(!from||!visibleIds.has(from)||isBridge(route.sourcePort?.entityKind))return;
+      const to=visibleTargetFor(route);
+      if(!to||to===from)return;
+      const key=`${from}:${to}:${route.kind}`;
+      if(edgeKeys.has(key))return;edgeKeys.add(key);
+      edges.push({id:key,from,to,kind:route.kind,itemName:route.itemName});
+    });
+    const indegree=new Map(baseNodes.map((node)=>[node.id,0])),adjacency=new Map<string,Set<string>>(),rank=new Map(baseNodes.map((node)=>[node.id,0]));
+    edges.forEach((edge)=>{const targets=adjacency.get(edge.from)??new Set<string>();if(!targets.has(edge.to)){targets.add(edge.to);adjacency.set(edge.from,targets);indegree.set(edge.to,(indegree.get(edge.to)??0)+1)}});
+    const queue=baseNodes.filter((node)=>(indegree.get(node.id)??0)===0).sort((a,b)=>a.sourceY-b.sourceY||a.sourceX-b.sourceX).map((node)=>node.id);
+    for(let cursor=0;cursor<queue.length;cursor++){
+      const id=queue[cursor];
+      (adjacency.get(id)??[]).forEach((target)=>{rank.set(target,Math.max(rank.get(target)??0,(rank.get(id)??0)+1));indegree.set(target,(indegree.get(target)??1)-1);if(indegree.get(target)===0)queue.push(target)});
+    }
+    const groups=new Map<number,typeof baseNodes>();
+    baseNodes.forEach((node)=>{const column=rank.get(node.id)??0,list=groups.get(column)??[];list.push(node);groups.set(column,list)});
+    groups.forEach((nodes)=>nodes.sort((a,b)=>a.sourceY-b.sourceY||a.sourceX-b.sourceX));
+    const nodeWidth=164,nodeHeight=72,columnGap=92,rowGap=34,padding=40;
+    const nodes:FlowGraphNode[]=baseNodes.map((node)=>{
+      const column=rank.get(node.id)??0,row=(groups.get(column)??[]).findIndex((candidate)=>candidate.id===node.id);
+      return {...node,x:padding+column*(nodeWidth+columnGap),y:padding+row*(nodeHeight+rowGap)};
+    });
+    const maxColumn=Math.max(0,...nodes.map((node)=>rank.get(node.id)??0)),maxRows=Math.max(1,...[...groups.values()].map((nodes)=>nodes.length));
+    return {nodes,edges,width:Math.max(720,padding*2+(maxColumn+1)*nodeWidth+maxColumn*columnGap),height:Math.max(420,padding*2+maxRows*nodeHeight+(maxRows-1)*rowGap),nodeWidth,nodeHeight};
+  },[bridgeForwardRoutes,connectedFlowRoutes,grid]);
   const tick=simulation.tick;
   const elapsedSeconds=Math.floor(tick/SIM_TICKS_PER_SECOND);
   const productionStates = Object.values(machineStates);
@@ -906,6 +992,7 @@ export default function Home() {
     const ids=new Set<string>();
     Object.entries(simulation.inventories).forEach(([id,inventory])=>{
       const kind=entityKinds.get(id);
+      if(isBridge(kind))return;
       if(inputTotalFor(inventory.input,"belt")>=inputCapacityFor(kind,"belt")||inputTotalFor(inventory.input,"pipe")>=inputCapacityFor(kind,"pipe")||totalInventory(inventory.output)>=OUTPUT_CAPACITY)ids.add(id);
     });
     return ids;
@@ -917,9 +1004,11 @@ export default function Home() {
   },[simulation.transits]);
   const stalledRouteIds=useMemo(()=>new Set(connectedFlowRoutes.filter((route)=>{
     if(!running||!route.valid)return false;
-    const targetBlocked=!route.targetPort||inputTotalFor((simulation.inventories[route.targetPort.entityId]??{input:{},output:{}}).input,route.kind)>=inputCapacityFor(entityKinds.get(route.targetPort.entityId),route.kind);
+    const bridgeOutput=bridgeForwardRoutes.get(route.id),outputLane=bridgeOutput?transitsByRoute.get(bridgeOutput.id)??[]:[];
+    const bridgeBlocked=Boolean(route.targetPort&&isBridge(route.targetPort.entityKind)&&(!bridgeOutput||(simulation.laneReadyAt[bridgeOutput.id]??0)>simulation.tick||(bridgeOutput.kind==="pipe"?!pipeLaneCanAccept(outputLane,bridgeOutput.cells.length):!beltLaneCanAccept(outputLane,bridgeOutput.cells.length))));
+    const targetBlocked=!route.targetPort||bridgeBlocked||(!isBridge(route.targetPort.entityKind)&&inputTotalFor((simulation.inventories[route.targetPort.entityId]??{input:{},output:{}}).input,route.kind)>=inputCapacityFor(entityKinds.get(route.targetPort.entityId),route.kind));
      return targetBlocked&&(route.kind==="pipe"?pipeLaneIsFull(transitsByRoute.get(route.id)??[],route.cells.length):beltLaneIsFull(transitsByRoute.get(route.id)??[],route.cells.length));
-  }).map((route)=>route.id)),[connectedFlowRoutes,entityKinds,running,simulation.inventories,transitsByRoute]);
+  }).map((route)=>route.id)),[bridgeForwardRoutes,connectedFlowRoutes,entityKinds,running,simulation.inventories,simulation.laneReadyAt,simulation.tick,transitsByRoute]);
   const transportMeta=useMemo(()=>{
     const meta=new Map<string,{kind:TransportKind;name:string;image:string;rate:number;connected:boolean;targetConnected:boolean;travelSeconds:number;cargoCount:number;capacity:number;full:boolean;color?:string}>();
     const observedSeconds=Math.max(5,Math.min(60,simulation.tick/SIM_TICKS_PER_SECOND));
@@ -1005,7 +1094,7 @@ export default function Home() {
   const selectedRecipe=selectedDefinition?activeRecipe(selectedDefinition,selectedEntity?.recipeId):null;
   const selectedModes=selectedDefinition?[...new Set(selectedDefinition.recipes.map((candidate)=>candidate.mode))]:[];
   const selectedInventory=selectedEntityId?simulation.inventories[selectedEntityId]??{input:{},output:{}}:{input:{},output:{}};
-  const inventoryMenuVisible=Boolean(selectedEntity&&selectedEntity.kind!=="depot"&&selectedEntity.kind!=="powerPole");
+  const inventoryMenuVisible=Boolean(selectedEntity&&selectedEntity.kind!=="depot"&&selectedEntity.kind!=="powerPole"&&!isBridge(selectedEntity.kind));
   const selectedInputItemIds=[...new Set([...(selectedRecipe?.inputs.map((item)=>item.itemId)??[]),...Object.keys(selectedInventory.input)])];
   const selectedSolidInputItemIds=selectedInputItemIds.filter((itemId)=>itemTransport(itemId)==="belt");
   const selectedFluidInputItemIds=selectedInputItemIds.filter((itemId)=>itemTransport(itemId)==="pipe");
@@ -1562,18 +1651,19 @@ export default function Home() {
 
         <section className="canvas-panel">
           <div className="canvas-toolbar">
-            <div><span className="live-dot" /> 蓝图预览 / AIC-01</div>
+            <div><span className="live-dot" /> {canvasView==="blueprint"?"蓝图预览 / AIC-01":"产线流程图 / NODE OVERVIEW"}</div>
             <div className="canvas-controls">
-              <button onClick={() => setZoom(Math.max(.55, zoom-.1))}>−</button><span>{Math.round(zoom*100)}%</span><button onClick={() => setZoom(Math.min(1.7, zoom+.1))}>＋</button>
+              <div className="canvas-view-switch" role="group" aria-label="画布视图"><button className={canvasView==="blueprint"?"active":""} onClick={()=>setCanvasView("blueprint")}>蓝图</button><button className={canvasView==="flow"?"active":""} onClick={()=>setCanvasView("flow")}>流程图</button></div>
+              {canvasView==="blueprint"?<><button onClick={() => setZoom(Math.max(.55, zoom-.1))}>−</button><span>{Math.round(zoom*100)}%</span><button onClick={() => setZoom(Math.min(1.7, zoom+.1))}>＋</button>
               <details className="settings"><summary>画布设置</summary><div className="settings-popover">
                 <label><span>网格对比度 <b>{Math.round(gridOpacity*100)}%</b></span><input type="range" min="0.03" max="0.35" step="0.01" value={gridOpacity} onChange={e=>setGridOpacity(Number(e.target.value))}/></label>
                 <label><span>缩放 <b>{Math.round(zoom*100)}%</b></span><input type="range" min="0.55" max="1.7" step="0.05" value={zoom} onChange={e=>setZoom(Number(e.target.value))}/></label>
                 <div className="size-inputs"><label>列数<input type="number" min="12" max="32" value={cols} onChange={e=>setCols(Math.max(12,Math.min(32,Number(e.target.value))))}/></label><label>行数<input type="number" min="8" max="24" value={rows} onChange={e=>setRows(Math.max(8,Math.min(24,Number(e.target.value))))}/></label></div>
                 <button onClick={()=>{setPan({x:0,y:0});setZoom(1)}}>重置视图</button><small>滚轮缩放 · 按住滚轮拖动画布</small>
-              </div></details>
+              </div></details></>:<span className="flow-summary">{flowGraph.nodes.length} 节点 · {flowGraph.edges.length} 连接</span>}
             </div>
           </div>
-          <div className="grid-wrap" style={{"--grid-opacity":gridOpacity} as React.CSSProperties}
+          {canvasView==="blueprint"?<div className="grid-wrap" style={{"--grid-opacity":gridOpacity} as React.CSSProperties}
             onMouseDown={e=>{if(e.button===1||e.altKey){e.preventDefault();setPanning({x:e.clientX,y:e.clientY,ox:pan.x,oy:pan.y})}}}
             onMouseMove={e=>{if(panning)setPan({x:panning.ox+e.clientX-panning.x,y:panning.oy+e.clientY-panning.y})}}
             onMouseUp={()=>setPanning(null)} onMouseLeave={()=>setPanning(null)}
@@ -1709,9 +1799,23 @@ export default function Home() {
                     {transport&&<span className="transport-tooltip"><span>{routeForCell?.itemId?<AssetThumb src={transport.image} label={transport.name}/>:<i className="empty-item-icon">--</i>}<strong>{transport.kind==="pipe"?"管道":"传送带"} · {transport.name}</strong></span><small>当前流速 {transport.rate}/min · 占用 {transport.cargoCount}/{transport.capacity} 单位</small><small>线路 {routeForCell?.cells.length??0} 格 · 基准运输耗时 {transport.travelSeconds.toFixed(1)}s</small><small>额定吞吐 {transport.kind==="pipe"?PIPE_ITEMS_PER_MINUTE:BELT_ITEMS_PER_MINUTE}/min · {transport.kind==="pipe"?"每格缓存 4 单位":"每格最多 1 件"}</small>{routeForCell&&stalledRouteIds.has(routeForCell.id)&&<small>{transport.targetConnected?"下游库存已满 · 线路满载阻塞":"末端未接输入口 · 线路满载阻塞"}</small>}{transport.connected&&!transport.targetConnected&&!transport.full&&<small>已连接输出口 · 内容将在末端逐格堆积</small>}{!transport.connected&&<small>未连接设备输出口 · 不会生成内容</small>}{secondaryTransport&&<><span className="tooltip-layer"><strong>下层传送带 · {secondaryTransport.name}</strong></span><small>当前流速 {secondaryTransport.rate}/min · 占用 {secondaryTransport.cargoCount}/{secondaryTransport.capacity}</small><small>再次单击可在管道/传送带之间切换选择</small></>}</span>}
                   </button>;
               })}
+              <div className="port-overlay" aria-label="设备输入输出口显示层">
+                {resolvedPorts.filter((port)=>!hiddenDirectPortKeys.has(port.key)).map((port)=>{
+                  const left=port.cellX+(port.side===0?1:port.side===2?0:.5),top=port.cellY+(port.side===1?1:port.side===3?0:.5);
+                  return <span key={port.key} style={{left:`${left/cols*100}%`,top:`${top/rows*100}%`}} className={`port-marker global-port ${isLogistics(port.entityKind)?"compact-port":""} ${port.type} ${port.transport} side-${port.side} ${snapCandidate?.key===port.key?"snap-target":""} ${isPortConnected(grid,pipeGrid,port,directlyConnectedPortKeys)?"connected":""}`} title={`${port.transport==="pipe"?"液体":"固体"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`} aria-label={`${port.transport==="pipe"?"液体":"固体"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`}><span className="port-icon" aria-hidden="true"><i/><b/></span></span>;
+                })}
+              </div>
             </div>
             <div className="axis axis-x">00　　　04　　　08　　　12　　　16</div>
-          </div>
+          </div>:<div className="flow-diagram" aria-label="工业设备缩略连接图">
+            <div className="flow-legend"><span><i className="belt"/>传送带连接</span><span><i className="pipe"/>管道连接</span><small>物流桥已折叠 · 分流器与汇流器保留为节点</small></div>
+            {flowGraph.nodes.length?<div className="flow-stage" style={{width:flowGraph.width,height:flowGraph.height}}>
+              <svg className="flow-links" width={flowGraph.width} height={flowGraph.height} viewBox={`0 0 ${flowGraph.width} ${flowGraph.height}`} aria-hidden="true">
+                {flowGraph.edges.map((edge)=>{const source=flowGraph.nodes.find((node)=>node.id===edge.from),target=flowGraph.nodes.find((node)=>node.id===edge.to);if(!source||!target)return null;const sx=source.x+flowGraph.nodeWidth,sy=source.y+flowGraph.nodeHeight/2,tx=target.x,ty=target.y+flowGraph.nodeHeight/2,bend=Math.max(48,Math.abs(tx-sx)*.48);return <g key={edge.id} className={`flow-link ${edge.kind}`}><path d={`M ${sx} ${sy} C ${sx+bend} ${sy}, ${tx-bend} ${ty}, ${tx} ${ty}`}/><circle cx={tx} cy={ty} r="3.5"/><title>{edge.kind==="pipe"?"管道":"传送带"} · {edge.itemName}</title></g>})}
+              </svg>
+              {flowGraph.nodes.map((node)=>{const state=machineStates[node.id]?.status,status=state==="running"?"生产中":state==="blocked"?"阻塞":state==="starved"?"缺少输入":state==="unpowered"?"未供电":state==="idle"?"已暂停":node.status;return <article key={node.id} className={`flow-node ${node.kind} ${state??"idle"}`} style={{left:node.x,top:node.y,width:flowGraph.nodeWidth,height:flowGraph.nodeHeight}}><header>{node.label}<span>{status}</span></header><div><AssetThumb src={node.image} label={node.label}/><span><strong>{node.detail}</strong><small>{node.kind==="splitter"||node.kind==="pipeSplitter"?"1 入 · 多路输出":node.kind==="merger"||node.kind==="pipeMerger"?"多路输入 · 1 出":"工业设备"}</small></span></div><i className="node-input" aria-hidden="true"/><i className="node-output" aria-hidden="true"/></article>})}
+            </div>:<div className="flow-empty">画布中还没有可显示的工业设备</div>}
+          </div>}
           <div className="status-strip"><span>{notice}</span><span>网格 {cols} × {rows}</span><span>设备/传送带占用 {Math.round(Object.keys(grid).filter(k=>{const [x,y]=k.split(',').map(Number);return x<cols&&y<rows}).length / (cols * rows) * 100)}% · 管道 {counts.pipes} 格</span></div>
         </section>
 

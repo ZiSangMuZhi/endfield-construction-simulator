@@ -110,6 +110,22 @@ test("maps the long-press radial gesture to stable directional actions", async (
   assert.equal(radial.radialSelection(8, 8).action, null);
 });
 
+test("keeps each logistics bridge axis strictly opposite and independent", async () => {
+  const routing=await import(new URL("../lib/bridge-routing.ts",import.meta.url));
+  const incoming={id:"incoming",targetPort:{entityId:"bridge-a",entityKind:"logisticsBridge",index:0,side:2}};
+  const adjacent={id:"adjacent",sourcePort:{entityId:"bridge-a",entityKind:"logisticsBridge",index:0,side:1}};
+  const wrongAxis={id:"wrong-axis",sourcePort:{entityId:"bridge-a",entityKind:"logisticsBridge",index:1,side:0}};
+  const otherBridge={id:"other-bridge",sourcePort:{entityId:"bridge-b",entityKind:"logisticsBridge",index:0,side:0}};
+  const opposite={id:"opposite",sourcePort:{entityId:"bridge-a",entityKind:"logisticsBridge",index:0,side:0}};
+  assert.equal(routing.pairedBridgeOutput(incoming,[adjacent,wrongAxis,otherBridge,opposite]),opposite);
+  assert.equal(routing.bridgePortsPair(incoming.targetPort,adjacent.sourcePort),false);
+  assert.equal(routing.bridgePortsPair(incoming.targetPort,wrongAxis.sourcePort),false);
+  assert.equal(routing.bridgePortsPair(incoming.targetPort,opposite.sourcePort),true);
+  const pipeIncoming={id:"pipe-in",targetPort:{entityId:"pipe-a",entityKind:"pipeBridge",index:1,side:3}};
+  const pipeOpposite={id:"pipe-out",sourcePort:{entityId:"pipe-a",entityKind:"pipeBridge",index:1,side:1}};
+  assert.equal(routing.pairedBridgeOutput(pipeIncoming,[pipeOpposite]),pipeOpposite);
+});
+
 test("supports layered belt and pipe planning with draggable facilities", async () => {
   const [page, css, timing, worksheet] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
@@ -304,11 +320,29 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(page, /cells:\[\{x:targetPort\.cellX,y:targetPort\.cellY/);
   assert.match(page, /const propagationQueue=routes\.filter/);
   assert.match(page, /outgoingByEntity\.get\(targetPort\.entityId\)/);
+  assert.match(page, /kind==="logisticsBridge"\|\|kind==="pipeBridge"\?0/);
+  assert.match(page, /const bridgeForwardRoutes=useMemo/);
+  assert.match(page, /const outgoing=pairedBridgeOutput\(incoming,connectedFlowRoutes\)/);
+  assert.match(page, /route\.targetPort&&!isBridge\(route\.targetPort\.entityKind\)\?ensureInventory/);
+  assert.match(page, /isBridge\(route\.sourcePort\.entityKind\)\)return/);
+  assert.match(page, /activeByRoute\.set\(outgoing\.id,\[\.\.\.outgoingLane,\{\.\.\.leader,routeId:outgoing\.id,position:0,previousPosition:0\}\]\)/);
+  assert.match(page, /!isBridge\(selectedEntity\.kind\)/);
   assert.match(page, /if\(route\.direct\)return/);
   assert.match(page, /cellPorts\.filter\(\(port\)=>!hiddenDirectPortKeys\.has\(port\.key\)\)/);
   assert.match(page, /isPortConnected\(grid,pipeGrid,port,directlyConnectedPortKeys\)/);
   assert.match(css, /\.marquee-box/);
   assert.match(css, /\.cell\.logisticsBridge \.port-marker/);
+  assert.match(page, /const \[canvasView,setCanvasView\]=useState<CanvasView>\("blueprint"\)/);
+  assert.match(page, /className="flow-diagram"/);
+  assert.match(page, /物流桥已折叠 · 分流器与汇流器保留为节点/);
+  assert.match(page, /const visibleKinds=new Set<Kind>/);
+  assert.match(page, /route=bridgeForwardRoutes\.get\(route\.id\)/);
+  assert.match(page, /className="port-overlay"/);
+  assert.match(page, /className=\{`port-marker global-port/);
+  assert.match(css, /\.cell>\.port-marker\{display:none!important\}/);
+  assert.match(css, /\.port-overlay\{[^}]*z-index:36/);
+  assert.match(css, /\.flow-node\{/);
+  assert.match(css, /\.flow-link\.pipe path/);
   assert.match(css, /\.route-track\.draft-route\.invalid/);
   assert.doesNotMatch(css, /data-theme="dark"/);
   assert.match(timing, /BELT_ITEMS_PER_MINUTE = 30/);
