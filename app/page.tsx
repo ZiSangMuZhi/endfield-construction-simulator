@@ -5,15 +5,17 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { BELT_HEADWAY_TICKS, BELT_ITEMS_PER_MINUTE, PIPE_HEADWAY_TICKS, PIPE_ITEMS_PER_MINUTE, PIPE_LANE_PROFILE, SIM_TICK_MS, SIM_TICKS_PER_SECOND, advanceBeltLane, advancePipeLane, beltLaneCanAccept, beltLaneIsFull, beltTravelSeconds, nextLaneReadyTick, pipeLaneCanAccept, pipeLaneIsFull } from "../lib/belt-timing";
 import { bridgePortsPair, pairedBridgeOutput } from "../lib/bridge-routing";
 import { RADIAL_CONFIRM_DELAY_MS, RADIAL_HOLD_DELAY_MS, RADIAL_PREOPEN_TOLERANCE_PX, RadialAction, radialSelection } from "../lib/radial-menu";
+import { occupiedSharedSlots, sharedBufferAfterRecipe, sharedBufferCanAccept, sharedBufferWithOutputs } from "../lib/machine-buffer.mjs";
 
 type TransportKind = "belt" | "pipe";
-type Kind = TransportKind | "refiner" | "crusher" | "fitter" | "molder" | "filler" | "dismantler" | "sealer" | "grinder" | "seedPicker" | "planter" | "reactor" | "purifier" | "waterTreatment" | "forge" | "gearAssembler" | "waterPump" | "splitter" | "merger" | "logisticsBridge" | "pipeSplitter" | "pipeMerger" | "pipeBridge" | "storagePort" | "tank" | "depot" | "powerPole";
-type ProductionKind = "refiner" | "crusher" | "fitter" | "molder" | "filler" | "dismantler" | "sealer" | "grinder" | "seedPicker" | "planter" | "reactor" | "purifier" | "waterTreatment" | "forge" | "gearAssembler" | "waterPump";
-type MachineMode = "solid" | "fluid";
+type Kind = TransportKind | "refiner" | "crusher" | "fitter" | "molder" | "filler" | "dismantler" | "sealer" | "grinder" | "seedPicker" | "planter" | "reactor" | "expandedReactor" | "purifier" | "waterTreatment" | "forge" | "gearAssembler" | "waterPump" | "acidWaterPump" | "gasDisperser" | "liquidGasConverter" | "solidGasConverter" | "gasReactor" | "splitter" | "merger" | "logisticsBridge" | "itemLimiter" | "pipeSplitter" | "pipeMerger" | "pipeBridge" | "pipeLimiter" | "undergroundPipeInlet" | "undergroundPipeOutlet" | "multiUndergroundPipeInlet" | "multiUndergroundPipeOutlet" | "storagePort" | "tank" | "depot" | "powerPole";
+type ProductionKind = "refiner" | "crusher" | "fitter" | "molder" | "filler" | "dismantler" | "sealer" | "grinder" | "seedPicker" | "planter" | "reactor" | "expandedReactor" | "purifier" | "waterTreatment" | "forge" | "gearAssembler" | "waterPump" | "acidWaterPump" | "gasDisperser" | "liquidGasConverter" | "solidGasConverter" | "gasReactor";
+type MachineMode = "solid" | "fluid" | "gas";
 type DeviceCategory = "全部" | "资源开采" | "仓储存取" | "基础生产" | "合成制造" | "电力供应" | "功能设备" | "战斗辅助" | "种植调配";
 type Direction = 0 | 1 | 2 | 3;
 type PipeContent = "clean-water" | "liquid-xiranite" | "sewage";
-type Cell = { kind: Kind; rotation: Direction; entry?: Direction; id: string; root?: boolean; partX?: number; partY?: number; size?: number; width?: number; height?: number; content?: PipeContent; itemId?: string; recipeId?:string };
+type OutputFilters = { solid?:string; pipe0?:string; pipe1?:string };
+type Cell = { kind: Kind; rotation: Direction; entry?: Direction; id: string; root?: boolean; partX?: number; partY?: number; size?: number; width?: number; height?: number; content?: PipeContent; itemId?: string; recipeId?:string; pairedEntityId?:string; outputFilters?:OutputFilters; autoMultiRecipeUnblock?:boolean };
 type Grid = Record<string, Cell>;
 
 const DEFAULT_COLS = 18;
@@ -35,8 +37,9 @@ type GroupCell = { layer:"grid"|"pipe"; sourceKey:string; dx:number; dy:number; 
 type GroupSelection = { entityIds:string[]; gridKeys:string[]; pipeKeys:string[]; minX:number; minY:number; maxX:number; maxY:number };
 type PickedGroup = { mode:"move"|"copy"; sourceGridKeys:string[]; sourcePipeKeys:string[]; cells:GroupCell[]; label:string };
 type MarqueeState = { pointerId:number; start:Point; current:Point };
-type MachineState = { id:string; kind:ProductionKind; recipeId:string; status:"idle"|"running"|"waiting"|"starved"|"blocked"|"unpowered"; progress:number; remaining:string; hasInput:boolean; hasOutput:boolean; powered:boolean; inventoryFull:boolean };
+type MachineState = { id:string; kind:ProductionKind; recipeId:string; status:"idle"|"running"|"waiting"|"starved"|"blocked"|"unpowered"|"environment"; progress:number; remaining:string; hasInput:boolean; hasOutput:boolean; powered:boolean; inventoryFull:boolean };
 type PowerZone = { id:string; x:number; y:number; size:number };
+type GasZone = PowerZone & { itemId?:string };
 type Point = { x:number; y:number };
 type PortType = "input" | "output";
 type PortSpec = { x:number; y:number; side:Direction; transport?:TransportKind; modes?:MachineMode[]; outputIndex?:number };
@@ -55,29 +58,30 @@ type IndustrialItem = { id:string; name:string; category:"矿物"|"工业产物"
 type DeviceInventory = { input:Record<string,number>; output:Record<string,number> };
 type RecipeQuantity = {itemId:string;amount:number};
 type MachineRecipe = {id:string;name:string;mode:MachineMode;inputs:RecipeQuantity[];outputs:RecipeQuantity[];durationTicks:number};
-type MachineDefinition = { name:string; width:number; height:number; image?:string; powerUsage:number; recipes:MachineRecipe[] };
+type MachineDefinition = { name:string; width:number; height:number; image?:string; modeImages?:Partial<Record<MachineMode,string>>; powerUsage:number; requiresPower?:boolean; parallelSlots?:number; bufferSlots?:number; autoSchedule?:"parallel"|"roundRobin"; recipes:MachineRecipe[] };
 type TransitItem = { id:string; routeId:string; itemId:string; position:number; previousPosition:number };
 type ItemStatSample = { second:number; produced:Record<string,number>; consumed:Record<string,number> };
 type ItemStatsChart = { produced:number[]; consumed:number[]; producedPath:string; consumedPath:string; producedTotal:number; consumedTotal:number };
-type SimulationState = { tick:number; inventories:Record<string,DeviceInventory>; processes:Record<string,number>; transits:TransitItem[]; routeCursor:Record<string,number>; laneReadyAt:Record<string,number>; routeTransfers:Record<string,number[]>; itemStats:ItemStatSample[] };
+type SimulationState = { tick:number; inventories:Record<string,DeviceInventory>; processes:Record<string,number>; transits:TransitItem[]; routeCursor:Record<string,number>; recipeCursor:Record<string,number>; laneReadyAt:Record<string,number>; routeTransfers:Record<string,number[]>; itemStats:ItemStatSample[] };
 type CanvasView = "blueprint" | "flow";
 type FlowGraphNode = { id:string; kind:Kind; label:string; image?:string; detail:string; status:string; sourceX:number; sourceY:number; x:number; y:number };
 type FlowGraphEdge = { id:string; from:string; to:string; kind:TransportKind; itemName:string };
 const SOLID_INPUT_CAPACITY=50;
 const FLUID_INPUT_CAPACITY=50;
-const OUTPUT_CAPACITY=60;
+const OUTPUT_CAPACITY=50;
 const STATS_HISTORY_SECONDS=300;
 const STATS_SMOOTHING_SECONDS=30;
 const STATS_SAMPLE_INTERVAL_SECONDS=5;
 const STATS_CHART_POINTS=Math.floor(STATS_HISTORY_SECONDS/STATS_SAMPLE_INTERVAL_SECONDS);
 const STATS_RETENTION_SECONDS=STATS_HISTORY_SECONDS+STATS_SMOOTHING_SECONDS;
 const totalInventory=(bucket:Record<string,number>)=>Object.values(bucket).reduce((sum,quantity)=>sum+quantity,0);
-const inputCapacityFor=(kind:Kind|undefined,transport:TransportKind)=>kind==="storagePort"?240:kind==="logisticsBridge"||kind==="pipeBridge"?0:["splitter","merger","pipeSplitter","pipeMerger"].includes(kind??"")?30:transport==="pipe"?FLUID_INPUT_CAPACITY:SOLID_INPUT_CAPACITY;
+const inputCapacityFor=(kind:Kind|undefined,transport:TransportKind)=>kind==="storagePort"?240:kind==="reactor"?200:kind==="expandedReactor"?400:["undergroundPipeInlet","undergroundPipeOutlet","multiUndergroundPipeInlet","multiUndergroundPipeOutlet"].includes(kind??"")?500:kind==="logisticsBridge"||kind==="pipeBridge"?0:["splitter","merger","itemLimiter","pipeSplitter","pipeMerger","pipeLimiter"].includes(kind??"")?30:transport==="pipe"?FLUID_INPUT_CAPACITY:SOLID_INPUT_CAPACITY;
+const outputCapacityFor=(kind:Kind|undefined)=>kind==="reactor"||kind==="expandedReactor"?0:OUTPUT_CAPACITY;
 const secondsToTicks=(seconds:number)=>Math.round(seconds*SIM_TICKS_PER_SECOND);
 const addQuantity=(bucket:Record<string,number>,itemId:string,amount:number)=>{bucket[itemId]=(bucket[itemId]??0)+amount};
-const modeLabel=(mode:MachineMode)=>mode==="fluid"?"液体模式":"固体模式";
+const modeLabel=(mode:MachineMode)=>mode==="fluid"?"液体模式":mode==="gas"?"气体模式":"固体模式";
 const chartPath=(values:number[],maximum:number,width=240,height=82)=>values.map((value,index)=>`${index?"L":"M"} ${(index/Math.max(1,values.length-1)*width).toFixed(2)} ${(height-value/Math.max(1,maximum)*height).toFixed(2)}`).join(" ");
-const emptySimulationState=():SimulationState=>({tick:0,inventories:{},processes:{},transits:[],routeCursor:{},laneReadyAt:{},routeTransfers:{},itemStats:[]});
+const emptySimulationState=():SimulationState=>({tick:0,inventories:{},processes:{},transits:[],routeCursor:{},recipeCursor:{},laneReadyAt:{},routeTransfers:{},itemStats:[]});
 
 const INDUSTRIAL_ITEMS:IndustrialItem[] = [
   {id:"blue-iron-ore",name:"蓝铁矿",category:"矿物",image:"/assets/items/blue-iron-ore.webp"},
@@ -107,6 +111,7 @@ const INDUSTRIAL_ITEMS:IndustrialItem[] = [
   {id:"hetonite-parts",name:"赫铜零件",category:"工业产物"},
   {id:"heavy-xiranite",name:"重息壤",category:"工业产物"},
   {id:"hetonite-equipment-component",name:"赫铜装备原件",category:"工业产物"},
+  {id:"seared-copper-equipment-component",name:"灼铜装备原件",category:"工业产物"},
   {id:"blue-iron-bottle",name:"蓝铁瓶",category:"工业产物",image:"/assets/items/blue-iron-bottle.webp"},
   {id:"purple-crystal-bottle",name:"紫晶质瓶",category:"工业产物",image:"/assets/items/purple-crystal-bottle.webp"},
   {id:"water-filled-blue-iron-bottle",name:"蓝铁瓶（清水）",category:"工业产物",image:"/assets/items/water-filled-blue-iron-bottle.webp"},
@@ -138,6 +143,32 @@ const INDUSTRIAL_ITEMS:IndustrialItem[] = [
   {id:"cuprium-powder",name:"赤铜粉末",category:"工业产物"},
   {id:"xircon",name:"壤晶",category:"工业产物"},
   {id:"hetonite",name:"赫铜块",category:"工业产物"},
+  {id:"carbon-block",name:"碳块",category:"工业产物",image:"/assets/items/item_carbon_mtl.webp"},
+  {id:"carbon-powder",name:"碳粉末",category:"工业产物",image:"/assets/items/item_carbon_powder.webp"},
+  {id:"dense-carbon-powder",name:"致密碳粉末",category:"工业产物",image:"/assets/items/item_carbon_enr_powder.webp"},
+  {id:"steel-parts",name:"钢制零件",category:"工业产物",image:"/assets/items/item_iron_enr_cmpt.webp"},
+  {id:"high-crystal-parts",name:"高晶零件",category:"工业产物"},
+  {id:"seared-copper",name:"灼铜块",category:"工业产物",image:"/assets/items/item_copper_enr2.webp"},
+  {id:"seared-copper-parts",name:"灼铜零件",category:"工业产物",image:"/assets/items/item_copper_enr2_cmpt.webp"},
+  {id:"gan-fruit",name:"柑实",category:"工业产物",image:"/assets/items/item_plant_moss_2.webp"},
+  {id:"gan-fruit-powder",name:"柑实粉末",category:"工业产物",image:"/assets/items/item_plant_moss_powder_2.webp"},
+  {id:"fine-gan-fruit-powder",name:"细磨柑实粉末",category:"工业产物",image:"/assets/items/item_plant_moss_enr_powder_2.webp"},
+  {id:"gan-fruit-seed",name:"柑实种子",category:"工业产物",image:"/assets/items/item_plant_moss_seed_2.webp"},
+  {id:"yazhen-powder",name:"芽针粉末",category:"工业产物"},
+  {id:"ketonized-shrub-seed",name:"酮化树种",category:"工业产物"},
+  {id:"steel-bottle",name:"钢质瓶",category:"工业产物"},
+  {id:"high-crystal-bottle",name:"高晶质瓶",category:"工业产物"},
+  {id:"red-copper-bottle",name:"赤铜瓶",category:"工业产物"},
+  {id:"hetonite-bottle",name:"赫铜瓶",category:"工业产物"},
+  {id:"pressure-canister",name:"赤铜耐压罐",category:"工业产物",image:"/assets/items/item_copper_jar.webp"},
+  {id:"pressure-canister-steam",name:"赤铜耐压罐（水蒸气）",category:"工业产物",image:"/assets/items/item_gasjar_copper_gas_water.webp"},
+  {id:"pressure-canister-acid",name:"赤铜耐压罐（酸气）",category:"工业产物",image:"/assets/items/item_gasjar_copper_gas_acid.webp"},
+  {id:"pressure-canister-xiranite",name:"赤铜耐压罐（息壤气）",category:"工业产物",image:"/assets/items/item_gasjar_copper_gas_xiranite.webp"},
+  {id:"pressure-canister-heavy-xiranite",name:"赤铜耐压罐（重息壤气）",category:"工业产物",image:"/assets/items/item_gasjar_copper_gas_xiranite_enr.webp"},
+  {id:"pressure-canister-inert",name:"赤铜耐压罐（惰气）",category:"工业产物",image:"/assets/items/item_gasjar_copper_gas_inert.webp"},
+  {id:"pressure-canister-cuprium",name:"赤铜耐压罐（气态赤铜）",category:"工业产物",image:"/assets/items/item_gasjar_copper_gas_copper.webp"},
+  {id:"pressure-canister-hetonite",name:"赤铜耐压罐（气态赫铜）",category:"工业产物",image:"/assets/items/item_gasjar_copper_gas_copper_enr.webp"},
+  {id:"pressure-canister-seared-copper",name:"赤铜耐压罐（气态灼铜）",category:"工业产物",image:"/assets/items/item_gasjar_copper_gas_copper_enr2.webp"},
   {id:"clean-water",name:"清水",category:"流体",image:"/assets/items/clean-water.svg",color:"#a9dbea"},
   {id:"sewage",name:"污水",category:"流体",image:"/assets/items/sewage.svg",color:"#b7c9aa"},
   {id:"jincao-solution",name:"锦草溶液",category:"流体",image:"/assets/items/jincao-solution.webp",color:"#c9e0cf"},
@@ -147,10 +178,29 @@ const INDUSTRIAL_ITEMS:IndustrialItem[] = [
   {id:"precipitation-acid",name:"沉积酸",category:"流体",color:"#ead9aa"},
   {id:"cuprium-solution",name:"赤铜溶液",category:"流体",color:"#e4b9a9"},
   {id:"hetonite-solution",name:"赫铜溶液",category:"流体",color:"#d7c0d2"},
+  {id:"yazhen-solution",name:"芽针溶液",category:"流体",image:"/assets/items/item_liquid_plant_grass_2.webp",color:"#d6dfc9"},
+  {id:"liquid-heavy-xiranite",name:"液化重息壤",category:"流体",image:"/assets/items/item_liquid_xiranite_enr.webp",color:"#d8c8de"},
+  {id:"steam",name:"水蒸气",category:"流体",image:"/assets/items/item_gas_water.webp",color:"#d7edf1"},
+  {id:"acid-gas",name:"酸气",category:"流体",image:"/assets/items/item_gas_acid.webp",color:"#eee1aa"},
+  {id:"xiranite-gas",name:"息壤气",category:"流体",image:"/assets/items/item_gas_xiranite.webp",color:"#bfe3d4"},
+  {id:"heavy-xiranite-gas",name:"重息壤气",category:"流体",image:"/assets/items/item_gas_xiranite_enr.webp",color:"#d6c2dc"},
+  {id:"inert-gas",name:"惰气",category:"流体",image:"/assets/items/item_gas_inert.webp",color:"#d8dadd"},
+  {id:"gaseous-cuprium",name:"气态赤铜",category:"流体",image:"/assets/items/item_gas_copper.webp",color:"#e8b6a2"},
+  {id:"gaseous-hetonite",name:"气态赫铜",category:"流体",image:"/assets/items/item_gas_copper_enr.webp",color:"#c9b6d8"},
+  {id:"gaseous-seared-copper",name:"气态灼铜",category:"流体",image:"/assets/items/item_gas_copper_enr2.webp",color:"#f2c79a"},
 ];
 
 const itemTransport=(itemId:string):TransportKind=>INDUSTRIAL_ITEMS.find((item)=>item.id===itemId)?.category==="流体"?"pipe":"belt";
 const inputTotalFor=(bucket:Record<string,number>,transport:TransportKind)=>Object.entries(bucket).reduce((sum,[itemId,quantity])=>sum+(itemTransport(itemId)===transport?quantity:0),0);
+const isSharedBufferMachine=(kind:Kind|undefined)=>kind==="reactor"||kind==="expandedReactor";
+const bufferSlotsFor=(kind:Kind|undefined)=>kind==="expandedReactor"?8:kind==="reactor"?4:0;
+const occupiedBufferSlots=(bucket:Record<string,number>)=>occupiedSharedSlots(bucket);
+const bufferCanAccept=(kind:Kind|undefined,bucket:Record<string,number>,itemId:string,amount=1)=>{
+  if(!isSharedBufferMachine(kind))return inputTotalFor(bucket,itemTransport(itemId))+amount<=inputCapacityFor(kind,itemTransport(itemId));
+  return sharedBufferCanAccept(bucket,itemId,bufferSlotsFor(kind),amount);
+};
+const bufferWithOutputs=(kind:Kind,bucket:Record<string,number>,outputs:RecipeQuantity[])=>sharedBufferWithOutputs(bucket,outputs,bufferSlotsFor(kind));
+const bufferAfterRecipe=(kind:Kind,bucket:Record<string,number>,current:MachineRecipe)=>sharedBufferAfterRecipe(bucket,current,bufferSlotsFor(kind));
 
 const recipe=(id:string,name:string,mode:MachineMode,inputs:RecipeQuantity[],outputs:RecipeQuantity[],seconds:number):MachineRecipe=>({id,name,mode,inputs,outputs,durationTicks:secondsToTicks(seconds)});
 const MACHINE_DEFINITIONS:Record<ProductionKind,MachineDefinition> = {
@@ -159,6 +209,15 @@ const MACHINE_DEFINITIONS:Record<ProductionKind,MachineDefinition> = {
     recipe("amethyst-fiber","紫晶纤维","solid",[{itemId:"purple-crystal-ore",amount:1}],[{itemId:"purple-crystal-fiber",amount:1}],2),
     recipe("origocrust","晶体外壳","solid",[{itemId:"source-ore",amount:1}],[{itemId:"crystal-shell",amount:1}],2),
     recipe("cuprium-fluid","赤铜块与污水","fluid",[{itemId:"red-copper-ore",amount:1},{itemId:"clean-water",amount:1}],[{itemId:"red-copper-block",amount:1},{itemId:"sewage",amount:1}],2),
+    recipe("dense-crystal","密制晶体","solid",[{itemId:"dense-crystal-powder",amount:1}],[{itemId:"dense-crystal",amount:1}],2),
+    recipe("steel-block","钢块","solid",[{itemId:"dense-blue-iron-powder",amount:1}],[{itemId:"steel-block",amount:1}],2),
+    recipe("high-crystal-fiber","高晶纤维","solid",[{itemId:"high-crystal-powder",amount:1}],[{itemId:"high-crystal-fiber",amount:1}],2),
+    recipe("stable-carbon","稳定碳块","solid",[{itemId:"dense-carbon-powder",amount:1}],[{itemId:"stable-carbon",amount:1}],2),
+    recipe("dense-crystal-powder-refine","致密晶体粉末","solid",[{itemId:"dense-source-powder",amount:1}],[{itemId:"dense-crystal-powder",amount:1}],2),
+    recipe("carbon-from-qiao","碳块（荞花）","solid",[{itemId:"qiao-flower",amount:1}],[{itemId:"carbon-block",amount:1}],2),
+    recipe("carbon-from-sandleaf","碳块（砂叶）","solid",[{itemId:"sand-leaf",amount:1}],[{itemId:"carbon-block",amount:1}],2),
+    recipe("carbon-from-jincao","碳块（锦草）","solid",[{itemId:"jincao",amount:1}],[{itemId:"carbon-block",amount:2}],2),
+    recipe("carbon-from-yazhen","碳块（芽针）","solid",[{itemId:"yazhen",amount:1}],[{itemId:"carbon-block",amount:2}],2),
   ]},
   crusher:{name:"粉碎机",width:3,height:3,image:"/assets/machines/crusher.webp",powerUsage:5,recipes:[
     recipe("originium-powder","源石粉末","solid",[{itemId:"source-ore",amount:1}],[{itemId:"source-powder",amount:1}],2),
@@ -169,14 +228,28 @@ const MACHINE_DEFINITIONS:Record<ProductionKind,MachineDefinition> = {
     recipe("buck-powder","荞花粉末","solid",[{itemId:"qiao-flower",amount:1}],[{itemId:"qiao-flower-powder",amount:2}],2),
     recipe("sandleaf-powder","砂叶粉末","solid",[{itemId:"sand-leaf",amount:1}],[{itemId:"sand-leaf-powder",amount:3}],2),
     recipe("ketonized-shrub-powder","酮化灌木粉末","solid",[{itemId:"ketonized-shrub",amount:1}],[{itemId:"ketonized-shrub-powder",amount:2}],2),
+    recipe("carbon-powder","碳粉末","solid",[{itemId:"carbon-block",amount:1}],[{itemId:"carbon-powder",amount:2}],2),
+    recipe("gan-fruit-powder","柑实粉末","solid",[{itemId:"gan-fruit",amount:1}],[{itemId:"gan-fruit-powder",amount:2}],2),
+    recipe("jincao-powder","锦草粉末","solid",[{itemId:"jincao",amount:1}],[{itemId:"jincao-powder",amount:2}],2),
+    recipe("yazhen-powder","芽针粉末","solid",[{itemId:"yazhen",amount:1}],[{itemId:"yazhen-powder",amount:2}],2),
   ]},
   fitter:{name:"配件机",width:3,height:3,image:"/assets/machines/assembler.webp",powerUsage:20,recipes:[
     recipe("ferrium-part","铁制零件","solid",[{itemId:"blue-iron-block",amount:1}],[{itemId:"iron-parts",amount:1}],2),
     recipe("amethyst-part","紫晶零件","solid",[{itemId:"purple-crystal-fiber",amount:1}],[{itemId:"purple-crystal-parts",amount:1}],2),
+    recipe("steel-part","钢制零件","solid",[{itemId:"steel-block",amount:1}],[{itemId:"steel-parts",amount:1}],2),
+    recipe("high-crystal-part","高晶零件","solid",[{itemId:"high-crystal-fiber",amount:1}],[{itemId:"high-crystal-parts",amount:1}],2),
+    recipe("cuprium-part","赤铜零件","solid",[{itemId:"red-copper-block",amount:1}],[{itemId:"red-copper-parts",amount:1}],2),
+    recipe("hetonite-part","赫铜零件","solid",[{itemId:"hetonite",amount:5}],[{itemId:"hetonite-parts",amount:1}],10),
+    recipe("seared-copper-part","灼铜零件","solid",[{itemId:"seared-copper",amount:5}],[{itemId:"seared-copper-parts",amount:1}],10),
   ]},
-  molder:{name:"塑形机",width:3,height:3,image:"/assets/machines/molder.webp",powerUsage:20,recipes:[
-    recipe("ferrium-bottle","蓝铁瓶","solid",[{itemId:"blue-iron-block",amount:1}],[{itemId:"blue-iron-bottle",amount:1}],2),
-    recipe("amethyst-bottle","紫晶质瓶","solid",[{itemId:"purple-crystal-fiber",amount:1}],[{itemId:"purple-crystal-bottle",amount:1}],2),
+  molder:{name:"塑形机",width:3,height:3,image:"/assets/machines/molder.webp",modeImages:{gas:"/assets/machines/molder-gas.webp"},powerUsage:20,recipes:[
+    recipe("ferrium-bottle","蓝铁瓶","solid",[{itemId:"blue-iron-block",amount:2}],[{itemId:"blue-iron-bottle",amount:1}],2),
+    recipe("amethyst-bottle","紫晶质瓶","solid",[{itemId:"purple-crystal-fiber",amount:2}],[{itemId:"purple-crystal-bottle",amount:1}],2),
+    recipe("steel-bottle","钢质瓶","solid",[{itemId:"steel-block",amount:2}],[{itemId:"steel-bottle",amount:1}],2),
+    recipe("high-crystal-bottle","高晶质瓶","solid",[{itemId:"high-crystal-fiber",amount:2}],[{itemId:"high-crystal-bottle",amount:1}],2),
+    recipe("cuprium-bottle","赤铜瓶","solid",[{itemId:"red-copper-block",amount:2}],[{itemId:"red-copper-bottle",amount:1}],2),
+    recipe("hetonite-bottle","赫铜瓶","solid",[{itemId:"hetonite",amount:2}],[{itemId:"hetonite-bottle",amount:1}],2),
+    recipe("pressure-canister","赤铜耐压罐","gas",[{itemId:"red-copper-block",amount:2},{itemId:"steam",amount:1}],[{itemId:"pressure-canister",amount:1}],2),
   ]},
   filler:{name:"灌装机",width:4,height:6,image:"/assets/machines/filler.webp",powerUsage:20,recipes:[
     recipe("buck-capsule","荞愈胶囊","solid",[{itemId:"purple-crystal-bottle",amount:5},{itemId:"qiao-flower-powder",amount:5}],[{itemId:"qiao-capsule",amount:1}],10),
@@ -184,16 +257,32 @@ const MACHINE_DEFINITIONS:Record<ProductionKind,MachineDefinition> = {
     recipe("amethyst-water-bottled","紫晶质瓶（清水）","fluid",[{itemId:"purple-crystal-bottle",amount:1},{itemId:"clean-water",amount:1}],[{itemId:"purple-water-bottle",amount:1}],2),
     recipe("amethyst-sewage-bottled","紫晶质瓶（污水）","fluid",[{itemId:"purple-crystal-bottle",amount:1},{itemId:"sewage",amount:1}],[{itemId:"purple-sewage-bottle",amount:1}],2),
     recipe("amethyst-jincao-bottled","紫晶质瓶（锦草溶液）","fluid",[{itemId:"purple-crystal-bottle",amount:1},{itemId:"jincao-solution",amount:1}],[{itemId:"purple-jincao-bottle",amount:1}],2),
+    recipe("pressure-canister-steam","灌装水蒸气","gas",[{itemId:"pressure-canister",amount:1},{itemId:"steam",amount:1}],[{itemId:"pressure-canister-steam",amount:1}],2),
+    recipe("pressure-canister-acid","灌装酸气","gas",[{itemId:"pressure-canister",amount:1},{itemId:"acid-gas",amount:1}],[{itemId:"pressure-canister-acid",amount:1}],2),
+    recipe("pressure-canister-xiranite","灌装息壤气","gas",[{itemId:"pressure-canister",amount:1},{itemId:"xiranite-gas",amount:1}],[{itemId:"pressure-canister-xiranite",amount:1}],2),
+    recipe("pressure-canister-heavy-xiranite","灌装重息壤气","gas",[{itemId:"pressure-canister",amount:1},{itemId:"heavy-xiranite-gas",amount:1}],[{itemId:"pressure-canister-heavy-xiranite",amount:1}],2),
+    recipe("pressure-canister-inert","灌装惰气","gas",[{itemId:"pressure-canister",amount:1},{itemId:"inert-gas",amount:1}],[{itemId:"pressure-canister-inert",amount:1}],2),
+    recipe("pressure-canister-cuprium","灌装气态赤铜","gas",[{itemId:"pressure-canister",amount:1},{itemId:"gaseous-cuprium",amount:1}],[{itemId:"pressure-canister-cuprium",amount:1}],2),
+    recipe("pressure-canister-hetonite","灌装气态赫铜","gas",[{itemId:"pressure-canister",amount:1},{itemId:"gaseous-hetonite",amount:1}],[{itemId:"pressure-canister-hetonite",amount:1}],2),
+    recipe("pressure-canister-seared-copper","灌装气态灼铜","gas",[{itemId:"pressure-canister",amount:1},{itemId:"gaseous-seared-copper",amount:1}],[{itemId:"pressure-canister-seared-copper",amount:1}],2),
   ]},
   dismantler:{name:"拆解机",width:4,height:6,powerUsage:20,recipes:[
     recipe("dismantle-amethyst-water","拆解紫晶质瓶（清水）","fluid",[{itemId:"purple-water-bottle",amount:1}],[{itemId:"purple-crystal-bottle",amount:1},{itemId:"clean-water",amount:1}],2),
     recipe("dismantle-amethyst-sewage","拆解紫晶质瓶（污水）","fluid",[{itemId:"purple-sewage-bottle",amount:1}],[{itemId:"purple-crystal-bottle",amount:1},{itemId:"sewage",amount:1}],2),
     recipe("dismantle-amethyst-jincao","拆解紫晶质瓶（锦草溶液）","fluid",[{itemId:"purple-jincao-bottle",amount:1}],[{itemId:"purple-crystal-bottle",amount:1},{itemId:"jincao-solution",amount:1}],2),
     recipe("dismantle-ferrium-water","拆解蓝铁瓶（清水）","fluid",[{itemId:"water-filled-blue-iron-bottle",amount:1}],[{itemId:"blue-iron-bottle",amount:1},{itemId:"clean-water",amount:1}],2),
+    recipe("dismantle-steam-canister","拆解赤铜耐压罐（水蒸气）","gas",[{itemId:"pressure-canister-steam",amount:1}],[{itemId:"pressure-canister",amount:1},{itemId:"steam",amount:1}],2),
+    recipe("dismantle-acid-canister","拆解赤铜耐压罐（酸气）","gas",[{itemId:"pressure-canister-acid",amount:1}],[{itemId:"pressure-canister",amount:1},{itemId:"acid-gas",amount:1}],2),
+    recipe("dismantle-xiranite-canister","拆解赤铜耐压罐（息壤气）","gas",[{itemId:"pressure-canister-xiranite",amount:1}],[{itemId:"pressure-canister",amount:1},{itemId:"xiranite-gas",amount:1}],2),
+    recipe("dismantle-heavy-xiranite-canister","拆解赤铜耐压罐（重息壤气）","gas",[{itemId:"pressure-canister-heavy-xiranite",amount:1}],[{itemId:"pressure-canister",amount:1},{itemId:"heavy-xiranite-gas",amount:1}],2),
+    recipe("dismantle-inert-canister","拆解赤铜耐压罐（惰气）","gas",[{itemId:"pressure-canister-inert",amount:1}],[{itemId:"pressure-canister",amount:1},{itemId:"inert-gas",amount:1}],2),
+    recipe("dismantle-cuprium-canister","拆解赤铜耐压罐（气态赤铜）","gas",[{itemId:"pressure-canister-cuprium",amount:1}],[{itemId:"pressure-canister",amount:1},{itemId:"gaseous-cuprium",amount:1}],2),
+    recipe("dismantle-hetonite-canister","拆解赤铜耐压罐（气态赫铜）","gas",[{itemId:"pressure-canister-hetonite",amount:1}],[{itemId:"pressure-canister",amount:1},{itemId:"gaseous-hetonite",amount:1}],2),
+    recipe("dismantle-seared-copper-canister","拆解赤铜耐压罐（气态灼铜）","gas",[{itemId:"pressure-canister-seared-copper",amount:1}],[{itemId:"pressure-canister",amount:1},{itemId:"gaseous-seared-copper",amount:1}],2),
   ]},
   sealer:{name:"封装机",width:4,height:6,image:"/assets/machines/sealer.webp",powerUsage:20,recipes:[
     recipe("lc-valley-battery","低容谷地电池","solid",[{itemId:"purple-crystal-parts",amount:5},{itemId:"source-powder",amount:10}],[{itemId:"low-capacity-valley-battery",amount:1}],10),
-    recipe("industrial-explosive","工业爆炸物","solid",[{itemId:"purple-crystal-parts",amount:5},{itemId:"ketonized-shrub-powder",amount:5}],[{itemId:"industrial-explosive",amount:1}],10),
+    recipe("industrial-explosive","工业爆炸物","solid",[{itemId:"purple-crystal-parts",amount:5},{itemId:"ketonized-shrub-powder",amount:1}],[{itemId:"industrial-explosive",amount:1}],10),
   ]},
   grinder:{name:"研磨机",width:4,height:6,image:"/assets/machines/grinder.webp",powerUsage:20,recipes:[
     recipe("dense-ferrium-powder","致密蓝铁粉末","solid",[{itemId:"blue-iron-powder",amount:2},{itemId:"sand-leaf-powder",amount:1}],[{itemId:"dense-blue-iron-powder",amount:1}],2),
@@ -201,35 +290,59 @@ const MACHINE_DEFINITIONS:Record<ProductionKind,MachineDefinition> = {
     recipe("dense-crystal-powder","致密晶体粉末","solid",[{itemId:"crystal-shell-powder",amount:2},{itemId:"sand-leaf-powder",amount:1}],[{itemId:"dense-crystal-powder",amount:1}],2),
     recipe("high-crystal-powder","高晶粉末","solid",[{itemId:"purple-crystal-powder",amount:2},{itemId:"sand-leaf-powder",amount:1}],[{itemId:"high-crystal-powder",amount:1}],2),
     recipe("fine-buck-powder","细磨荞花粉末","solid",[{itemId:"qiao-flower-powder",amount:2},{itemId:"sand-leaf-powder",amount:1}],[{itemId:"fine-qiao-flower-powder",amount:1}],2),
+    recipe("dense-carbon-powder","致密碳粉末","solid",[{itemId:"carbon-powder",amount:2},{itemId:"sand-leaf-powder",amount:1}],[{itemId:"dense-carbon-powder",amount:1}],2),
+    recipe("fine-gan-fruit-powder","细磨柑实粉末","solid",[{itemId:"gan-fruit-powder",amount:2},{itemId:"sand-leaf-powder",amount:1}],[{itemId:"fine-gan-fruit-powder",amount:1}],2),
   ]},
   seedPicker:{name:"采种机",width:5,height:5,image:"/assets/machines/seed-picker.webp",powerUsage:10,recipes:[
     recipe("buck-seed","荞花种子","solid",[{itemId:"qiao-flower",amount:1}],[{itemId:"qiao-flower-seed",amount:2}],2),
     recipe("sandleaf-seed","砂叶种子","solid",[{itemId:"sand-leaf",amount:1}],[{itemId:"sand-leaf-seed",amount:2}],2),
+    recipe("gan-fruit-seed","柑实种子","solid",[{itemId:"gan-fruit",amount:1}],[{itemId:"gan-fruit-seed",amount:2}],2),
+    recipe("ketonized-shrub-seed","酮化树种","solid",[{itemId:"ketonized-shrub",amount:1}],[{itemId:"ketonized-shrub-seed",amount:2}],2),
     recipe("jincao-seed","锦草种子","solid",[{itemId:"jincao",amount:1}],[{itemId:"jincao-seed",amount:1}],2),
     recipe("yazhen-seed","芽针种子","solid",[{itemId:"yazhen",amount:1}],[{itemId:"yazhen-seed",amount:1}],2),
   ]},
   planter:{name:"种植机",width:5,height:5,image:"/assets/machines/planter.webp",powerUsage:20,recipes:[
     recipe("buckflower","荞花","solid",[{itemId:"qiao-flower-seed",amount:1}],[{itemId:"qiao-flower",amount:1}],2),
     recipe("sandleaf","砂叶","solid",[{itemId:"sand-leaf-seed",amount:1}],[{itemId:"sand-leaf",amount:1}],2),
+    recipe("gan-fruit","柑实","solid",[{itemId:"gan-fruit-seed",amount:1}],[{itemId:"gan-fruit",amount:1}],2),
+    recipe("ketonized-shrub","酮化灌木","solid",[{itemId:"ketonized-shrub-seed",amount:1}],[{itemId:"ketonized-shrub",amount:1}],2),
     recipe("jincao-fluid","锦草","fluid",[{itemId:"jincao-seed",amount:1},{itemId:"clean-water",amount:1}],[{itemId:"jincao",amount:2}],2),
+    recipe("yazhen-fluid","芽针","fluid",[{itemId:"yazhen-seed",amount:1},{itemId:"clean-water",amount:1}],[{itemId:"yazhen",amount:2}],2),
   ]},
-  reactor:{name:"反应池",width:5,height:5,image:"/assets/machines/reactor.webp",powerUsage:20,recipes:[
+  reactor:{name:"反应池",width:5,height:5,image:"/assets/machines/reactor.webp",powerUsage:20,bufferSlots:4,autoSchedule:"roundRobin",recipes:[
     recipe("liquid-xiranite","液化息壤","fluid",[{itemId:"xiranite",amount:1},{itemId:"clean-water",amount:1}],[{itemId:"liquid-xiranite",amount:1}],2),
     recipe("jincao-solution","锦草溶液","fluid",[{itemId:"jincao-powder",amount:1},{itemId:"clean-water",amount:1}],[{itemId:"jincao-solution",amount:1}],2),
+    recipe("yazhen-solution","芽针溶液","fluid",[{itemId:"yazhen-powder",amount:1},{itemId:"clean-water",amount:1}],[{itemId:"yazhen-solution",amount:1}],2),
+    recipe("liquid-heavy-xiranite","液化重息壤","fluid",[{itemId:"heavy-xiranite",amount:1},{itemId:"precipitation-acid",amount:1}],[{itemId:"liquid-heavy-xiranite",amount:1}],2),
     recipe("cuprium-solution","赤铜溶液","fluid",[{itemId:"cuprium-powder",amount:1},{itemId:"precipitation-acid",amount:1}],[{itemId:"cuprium-solution",amount:1}],2),
     recipe("xircon-effluents","壤晶废液与惰性壤晶废液","fluid",[{itemId:"liquid-xiranite",amount:1},{itemId:"sewage",amount:1}],[{itemId:"xircon-effluent",amount:1},{itemId:"inert-xircon-effluent",amount:1}],2),
     recipe("xircon","壤晶","fluid",[{itemId:"xircon-effluent",amount:2},{itemId:"blue-iron-powder",amount:1}],[{itemId:"xircon",amount:1},{itemId:"sewage",amount:1}],2),
     recipe("hetonite","赫铜块","fluid",[{itemId:"hetonite-solution",amount:2},{itemId:"blue-iron-powder",amount:1}],[{itemId:"hetonite",amount:1},{itemId:"sewage",amount:1}],2),
   ]},
-  purifier:{name:"提纯机",width:5,height:5,powerUsage:50,recipes:[
+  expandedReactor:{name:"扩容反应池",width:6,height:5,image:"/assets/machines/expanded-reactor.webp",powerUsage:100,parallelSlots:8,bufferSlots:8,autoSchedule:"parallel",recipes:[
+    recipe("expanded-jincao-solution","锦草溶液","fluid",[{itemId:"jincao-powder",amount:1},{itemId:"clean-water",amount:1}],[{itemId:"jincao-solution",amount:1}],2),
+    recipe("expanded-yazhen-solution","芽针溶液","fluid",[{itemId:"yazhen-powder",amount:1},{itemId:"clean-water",amount:1}],[{itemId:"yazhen-solution",amount:1}],2),
+    recipe("expanded-liquid-xiranite","液化息壤","fluid",[{itemId:"xiranite",amount:1},{itemId:"clean-water",amount:1}],[{itemId:"liquid-xiranite",amount:1}],2),
+    recipe("expanded-liquid-heavy-xiranite","液化重息壤","fluid",[{itemId:"heavy-xiranite",amount:1},{itemId:"precipitation-acid",amount:1}],[{itemId:"liquid-heavy-xiranite",amount:1}],2),
+    recipe("expanded-cuprium-solution","赤铜溶液","fluid",[{itemId:"cuprium-powder",amount:1},{itemId:"precipitation-acid",amount:1}],[{itemId:"cuprium-solution",amount:1}],2),
+    recipe("expanded-xircon-effluents","壤晶废液与惰性壤晶废液","fluid",[{itemId:"liquid-xiranite",amount:1},{itemId:"sewage",amount:1}],[{itemId:"xircon-effluent",amount:1},{itemId:"inert-xircon-effluent",amount:1}],2),
+    recipe("expanded-xircon","壤晶","fluid",[{itemId:"xircon-effluent",amount:2},{itemId:"blue-iron-powder",amount:1}],[{itemId:"xircon",amount:1},{itemId:"sewage",amount:1}],2),
+    recipe("expanded-hetonite","赫铜块","fluid",[{itemId:"hetonite-solution",amount:2},{itemId:"blue-iron-powder",amount:1}],[{itemId:"hetonite",amount:1},{itemId:"sewage",amount:1}],2),
+  ]},
+  purifier:{name:"提纯机",width:5,height:5,image:"/assets/machines/purifier.webp",modeImages:{gas:"/assets/machines/purifier-gas.webp"},powerUsage:50,recipes:[
     recipe("purify-xircon-effluent","提纯壤晶废液","fluid",[{itemId:"inert-xircon-effluent",amount:4}],[{itemId:"xircon-effluent",amount:1},{itemId:"clean-water",amount:1}],2),
     recipe("purify-cuprium-solution","赫铜溶液","fluid",[{itemId:"cuprium-solution",amount:4}],[{itemId:"hetonite-solution",amount:1},{itemId:"precipitation-acid",amount:1}],2),
+    recipe("purify-heavy-xiranite-gas","重息壤气","gas",[{itemId:"xiranite-gas",amount:2}],[{itemId:"heavy-xiranite-gas",amount:1}],2),
+    recipe("purify-gaseous-hetonite","气态赫铜","gas",[{itemId:"gaseous-cuprium",amount:2}],[{itemId:"gaseous-hetonite",amount:2}],2),
   ]},
-  waterTreatment:{name:"废水处理机",width:3,height:3,powerUsage:50,recipes:[
+  waterTreatment:{name:"废水处理机",width:3,height:3,image:"/assets/machines/water-treatment.webp",powerUsage:50,recipes:[
     recipe("treat-sewage","污水无害化处理","fluid",[{itemId:"sewage",amount:1}],[],2),
+    recipe("treat-xircon-effluent","壤晶废液无害化处理","fluid",[{itemId:"xircon-effluent",amount:1}],[],2),
+    recipe("treat-inert-xircon-effluent","惰性壤晶废液无害化处理","fluid",[{itemId:"inert-xircon-effluent",amount:1}],[],2),
   ]},
   forge:{name:"天有洪炉",width:5,height:5,image:"/assets/machines/forge-of-the-sky.webp",powerUsage:50,recipes:[
     recipe("xiranite","息壤","fluid",[{itemId:"stable-carbon",amount:2},{itemId:"clean-water",amount:1}],[{itemId:"xiranite",amount:1}],2),
+    recipe("heavy-xiranite","重息壤","fluid",[{itemId:"xiranite",amount:10},{itemId:"xircon-effluent",amount:5}],[{itemId:"heavy-xiranite",amount:1}],10),
   ]},
   gearAssembler:{name:"装备原件机",width:4,height:6,image:"/assets/machines/gear-assembler.webp",powerUsage:10,recipes:[
     recipe("amethyst-component","紫晶装备原件","solid",[{itemId:"crystal-shell",amount:5},{itemId:"purple-crystal-fiber",amount:5}],[{itemId:"purple-equipment-component",amount:1}],10),
@@ -238,13 +351,54 @@ const MACHINE_DEFINITIONS:Record<ProductionKind,MachineDefinition> = {
     recipe("xiranite-component","息壤装备原件","solid",[{itemId:"dense-crystal",amount:10},{itemId:"xiranite",amount:10}],[{itemId:"xiranite-equipment-component",amount:1}],10),
     recipe("cuprium-component","赤铜装备原件","solid",[{itemId:"red-copper-parts",amount:10},{itemId:"xiranite",amount:10}],[{itemId:"red-copper-equipment-component",amount:1}],10),
     recipe("hetonite-component","赫铜装备原件","solid",[{itemId:"hetonite-parts",amount:2},{itemId:"heavy-xiranite",amount:2}],[{itemId:"hetonite-equipment-component",amount:1}],10),
+    recipe("seared-copper-component","灼铜装备原件","solid",[{itemId:"seared-copper-parts",amount:1},{itemId:"heavy-xiranite",amount:2}],[{itemId:"seared-copper-equipment-component",amount:1}],10),
   ]},
   waterPump:{name:"水泵",width:2,height:2,image:"/assets/machines/water-pump.svg",powerUsage:5,recipes:[
     recipe("clean-water","清水","fluid",[],[{itemId:"clean-water",amount:1}],1),
   ]},
+  acidWaterPump:{name:"二型耐酸水泵",width:2,height:2,image:"/assets/machines/water-pump.svg",powerUsage:5,recipes:[
+    recipe("acid-pump-water","清水","fluid",[],[{itemId:"clean-water",amount:1}],1),
+    recipe("acid-pump-acid","沉积酸","fluid",[],[{itemId:"precipitation-acid",amount:1}],1),
+  ]},
+  gasDisperser:{name:"气体散布机",width:3,height:3,image:"/assets/machines/gas-disperser.webp",powerUsage:0,requiresPower:false,recipes:[
+    recipe("diffuse-steam","水蒸气扩散","gas",[{itemId:"steam",amount:1}],[],10),
+    recipe("diffuse-acid","酸气扩散","gas",[{itemId:"acid-gas",amount:1}],[],10),
+    recipe("diffuse-xiranite","息壤气扩散","gas",[{itemId:"xiranite-gas",amount:1}],[],10),
+    recipe("diffuse-inert","惰气扩散","gas",[{itemId:"inert-gas",amount:1}],[],10),
+  ]},
+  liquidGasConverter:{name:"液气转化机",width:5,height:5,image:"/assets/machines/liquid-gas-converter.webp",modeImages:{gas:"/assets/machines/liquid-gas-converter-gas.webp"},powerUsage:50,recipes:[
+    recipe("gas-to-water","水蒸气转清水","fluid",[{itemId:"steam",amount:1}],[{itemId:"clean-water",amount:1}],2),
+    recipe("gas-to-acid","酸气转沉积酸","fluid",[{itemId:"acid-gas",amount:1}],[{itemId:"precipitation-acid",amount:1}],2),
+    recipe("gas-to-xiranite","息壤气转液化息壤","fluid",[{itemId:"xiranite-gas",amount:1}],[{itemId:"liquid-xiranite",amount:1}],2),
+    recipe("gas-to-heavy-xiranite","重息壤气转液化重息壤","fluid",[{itemId:"heavy-xiranite-gas",amount:5}],[{itemId:"liquid-heavy-xiranite",amount:2}],10),
+    recipe("gas-to-cuprium","气态赤铜转赤铜溶液","fluid",[{itemId:"gaseous-cuprium",amount:1}],[{itemId:"cuprium-solution",amount:2}],2),
+    recipe("gas-to-hetonite","气态赫铜转赫铜溶液","fluid",[{itemId:"gaseous-hetonite",amount:1}],[{itemId:"hetonite-solution",amount:1}],2),
+    recipe("water-to-gas","清水转水蒸气","gas",[{itemId:"clean-water",amount:1}],[{itemId:"steam",amount:1}],2),
+    recipe("acid-to-gas","沉积酸转酸气","gas",[{itemId:"precipitation-acid",amount:1}],[{itemId:"acid-gas",amount:1}],2),
+    recipe("xiranite-to-gas","液化息壤转息壤气","gas",[{itemId:"liquid-xiranite",amount:1}],[{itemId:"xiranite-gas",amount:1}],2),
+    recipe("heavy-xiranite-to-gas","液化重息壤转重息壤气","gas",[{itemId:"liquid-heavy-xiranite",amount:2}],[{itemId:"heavy-xiranite-gas",amount:5}],10),
+    recipe("cuprium-to-gas","赤铜溶液转气态赤铜","gas",[{itemId:"cuprium-solution",amount:2}],[{itemId:"gaseous-cuprium",amount:1}],2),
+    recipe("hetonite-to-gas","赫铜溶液转气态赫铜","gas",[{itemId:"hetonite-solution",amount:1}],[{itemId:"gaseous-hetonite",amount:1}],2),
+  ]},
+  solidGasConverter:{name:"固气转化机",width:5,height:5,image:"/assets/machines/solid-gas-converter.webp",modeImages:{gas:"/assets/machines/solid-gas-converter-gas.webp"},powerUsage:50,recipes:[
+    recipe("solid-xiranite-to-gas","息壤转息壤气","gas",[{itemId:"xiranite",amount:1}],[{itemId:"xiranite-gas",amount:1}],2),
+    recipe("solid-heavy-xiranite-to-gas","重息壤转重息壤气","gas",[{itemId:"heavy-xiranite",amount:2}],[{itemId:"heavy-xiranite-gas",amount:5}],10),
+    recipe("solid-cuprium-to-gas","赤铜块转气态赤铜","gas",[{itemId:"red-copper-block",amount:2}],[{itemId:"gaseous-cuprium",amount:1}],2),
+    recipe("solid-hetonite-to-gas","赫铜块转气态赫铜","gas",[{itemId:"hetonite",amount:1}],[{itemId:"gaseous-hetonite",amount:2}],2),
+    recipe("solid-seared-copper-to-gas","灼铜块转气态灼铜","gas",[{itemId:"seared-copper",amount:1}],[{itemId:"gaseous-seared-copper",amount:1}],2),
+    recipe("gas-xiranite-to-solid","息壤气转息壤","solid",[{itemId:"xiranite-gas",amount:1}],[{itemId:"xiranite",amount:1}],2),
+    recipe("gas-heavy-xiranite-to-solid","重息壤气转重息壤","solid",[{itemId:"heavy-xiranite-gas",amount:5}],[{itemId:"heavy-xiranite",amount:2}],10),
+    recipe("gas-cuprium-to-solid","气态赤铜转赤铜块","solid",[{itemId:"gaseous-cuprium",amount:1}],[{itemId:"red-copper-block",amount:2}],2),
+    recipe("gas-hetonite-to-solid","气态赫铜转赫铜块","solid",[{itemId:"gaseous-hetonite",amount:2}],[{itemId:"hetonite",amount:1}],2),
+    recipe("gas-seared-copper-to-solid","气态灼铜转灼铜块","solid",[{itemId:"gaseous-seared-copper",amount:1}],[{itemId:"seared-copper",amount:1}],2),
+  ]},
+  gasReactor:{name:"气体反应炉",width:5,height:5,image:"/assets/machines/gas-reactor.webp",powerUsage:50,recipes:[
+    recipe("gaseous-seared-copper","气态灼铜","gas",[{itemId:"gaseous-hetonite",amount:2},{itemId:"xiranite-gas",amount:1}],[{itemId:"gaseous-seared-copper",amount:1}],2),
+  ]},
 };
 
 const activeRecipe=(definition:MachineDefinition,recipeId?:string)=>definition.recipes.find((candidate)=>candidate.id===recipeId)??definition.recipes[0];
+const machineImageFor=(definition:MachineDefinition,recipe:MachineRecipe)=>definition.modeImages?.[recipe.mode]??definition.image;
 const automaticRecipe=(definition:MachineDefinition,currentRecipeId:string|undefined,input:Record<string,number>)=>{
   const stocked=Object.entries(input).filter(([,amount])=>amount>0);
   if(!stocked.length)return activeRecipe(definition,currentRecipeId);
@@ -257,6 +411,12 @@ const automaticRecipe=(definition:MachineDefinition,currentRecipeId:string|undef
   }).filter((entry)=>entry.matched>0).sort((a,b)=>b.score-a.score||a.index-b.index);
   return ranked[0]?.candidate??activeRecipe(definition,currentRecipeId);
 };
+const defaultOutputFilters=(definition:MachineDefinition):OutputFilters=>{
+  const outputs=[...new Set(definition.recipes.flatMap((candidate)=>candidate.outputs.map((output)=>output.itemId)))];
+  const solid=outputs.find((itemId)=>itemTransport(itemId)==="belt"),pipes=outputs.filter((itemId)=>itemTransport(itemId)==="pipe");
+  return {solid,pipe0:pipes[0],pipe1:pipes[1]??pipes[0]};
+};
+const outputFilterKey=(port:ResolvedPort,kind:TransportKind):keyof OutputFilters=>kind==="belt"?"solid":port.outputIndex===1?"pipe1":"pipe0";
 const itemName=(itemId:string)=>INDUSTRIAL_ITEMS.find((item)=>item.id===itemId)?.name??itemId;
 const recipeText=(current:MachineRecipe)=>`${current.inputs.length?current.inputs.map((input)=>`${itemName(input.itemId)} ×${input.amount}`).join(" + "):"环境输入"} → ${current.outputs.length?current.outputs.map((output)=>`${itemName(output.itemId)} ×${output.amount}`).join(" + "):"无害化处理"}`;
 const formatRate=(rate:number)=>Number.isInteger(rate)?String(rate):rate.toFixed(1).replace(/\.0$/,"");
@@ -274,25 +434,37 @@ const EQUIPMENT_LAYOUTS: Partial<Record<Kind,EquipmentLayout>> = {
   refiner:{width:3,height:3,inputs:[...edgePorts(3,2,0),{x:1,y:2,side:1,transport:"pipe",modes:["fluid"]}],outputs:[...edgePorts(3,0,2),{x:1,y:0,side:3,transport:"pipe",modes:["fluid"]}]},
   crusher:{width:3,height:3,inputs:edgePorts(3,2,0),outputs:edgePorts(3,0,2)},
   fitter:{width:3,height:3,inputs:edgePorts(3,2,0),outputs:edgePorts(3,0,2)},
-  molder:{width:3,height:3,inputs:edgePorts(3,2,0),outputs:edgePorts(3,0,2)},
-  filler:{width:4,height:6,inputs:[...edgePorts(6,2,0),{x:1,y:5,side:1,transport:"pipe",modes:["fluid"]}],outputs:edgePorts(6,0,3)},
+  molder:{width:3,height:3,inputs:[...edgePorts(3,2,0),{x:1,y:1,side:0,transport:"pipe",modes:["gas"]}],outputs:edgePorts(3,0,2)},
+  filler:{width:4,height:6,inputs:[...edgePorts(6,2,0),{x:1,y:5,side:1,transport:"pipe",modes:["fluid","gas"]}],outputs:edgePorts(6,0,3)},
   dismantler:{width:4,height:6,inputs:[{x:0,y:2,side:2}],outputs:[{x:3,y:1,side:0,outputIndex:0},{x:3,y:4,side:0,transport:"pipe",outputIndex:1}]},
   sealer:{width:4,height:6,inputs:edgePorts(6,2,0),outputs:edgePorts(6,0,3)},
   grinder:{width:4,height:6,inputs:edgePorts(6,2,0),outputs:edgePorts(6,0,3)},
   seedPicker:{width:5,height:5,inputs:edgePorts(5,2,0),outputs:edgePorts(5,0,4)},
   planter:{width:5,height:5,inputs:[...edgePorts(5,2,0),{x:2,y:4,side:1,transport:"pipe",modes:["fluid"]}],outputs:edgePorts(5,0,4)},
-  reactor:{width:5,height:5,inputs:[{x:0,y:1,side:2},{x:0,y:3,side:2,transport:"pipe"}],outputs:[{x:4,y:1,side:0,transport:"pipe",outputIndex:1},{x:4,y:3,side:0,transport:"pipe",outputIndex:0}]},
-  purifier:{width:5,height:5,inputs:[{x:0,y:2,side:2,transport:"pipe"}],outputs:[{x:4,y:1,side:0,transport:"pipe",outputIndex:1},{x:4,y:3,side:0,transport:"pipe",outputIndex:0}]},
+  reactor:{width:5,height:5,inputs:[{x:0,y:1,side:2},{x:0,y:3,side:2,transport:"pipe"}],outputs:[{x:2,y:0,side:3},{x:4,y:1,side:0,transport:"pipe",outputIndex:1},{x:4,y:3,side:0,transport:"pipe",outputIndex:0}]},
+  expandedReactor:{width:6,height:5,inputs:[{x:1,y:4,side:1},{x:2,y:4,side:1},{x:3,y:4,side:1},{x:4,y:4,side:1},{x:5,y:1,side:0,transport:"pipe"},{x:5,y:3,side:0,transport:"pipe"}],outputs:[{x:1,y:0,side:3},{x:2,y:0,side:3},{x:3,y:0,side:3},{x:4,y:0,side:3},{x:0,y:1,side:2,transport:"pipe",outputIndex:0},{x:0,y:3,side:2,transport:"pipe",outputIndex:1}]},
+  purifier:{width:5,height:5,inputs:[{x:0,y:2,side:2,transport:"pipe"},{x:2,y:4,side:1,modes:["gas"]}],outputs:[{x:4,y:1,side:0,transport:"pipe",outputIndex:1},{x:4,y:3,side:0,transport:"pipe",outputIndex:0}]},
   waterTreatment:{width:3,height:3,inputs:[{x:0,y:1,side:2,transport:"pipe"}],outputs:[]},
   forge:{width:5,height:5,inputs:[...edgePorts(5,2,0),{x:2,y:4,side:1,transport:"pipe"}],outputs:edgePorts(5,0,4)},
   gearAssembler:{width:4,height:6,inputs:edgePorts(6,2,0),outputs:edgePorts(6,0,3)},
   waterPump:{width:2,height:2,inputs:[],outputs:[{x:1,y:1,side:0,transport:"pipe"}]},
+  acidWaterPump:{width:2,height:2,inputs:[],outputs:[{x:1,y:1,side:0,transport:"pipe"}]},
+  gasDisperser:{width:3,height:3,inputs:[{x:0,y:1,side:2,transport:"pipe"}],outputs:[]},
+  liquidGasConverter:{width:5,height:5,inputs:[{x:4,y:1,side:0,transport:"pipe"},{x:4,y:3,side:0,transport:"pipe"},{x:2,y:4,side:1,transport:"pipe"}],outputs:[{x:0,y:1,side:2,transport:"pipe"},{x:0,y:3,side:2,transport:"pipe"}]},
+  solidGasConverter:{width:5,height:5,inputs:[{x:1,y:4,side:1,modes:["gas"]},{x:3,y:4,side:1,modes:["gas"]},{x:4,y:1,side:0,transport:"pipe",modes:["solid"]},{x:4,y:3,side:0,transport:"pipe",modes:["solid"]},{x:2,y:4,side:1,transport:"pipe"}],outputs:[{x:0,y:1,side:2,transport:"pipe",modes:["gas"]},{x:0,y:3,side:2,transport:"pipe",modes:["gas"]},{x:1,y:0,side:3,modes:["solid"]},{x:3,y:0,side:3,modes:["solid"]}]},
+  gasReactor:{width:5,height:5,inputs:[{x:0,y:1,side:2,transport:"pipe"},{x:0,y:3,side:2,transport:"pipe"}],outputs:[{x:4,y:1,side:0,transport:"pipe"},{x:4,y:3,side:0,transport:"pipe"}]},
   splitter:{width:1,height:1,inputs:[{x:0,y:0,side:2}],outputs:[{x:0,y:0,side:0},{x:0,y:0,side:1},{x:0,y:0,side:3}]},
   merger:{width:1,height:1,inputs:[{x:0,y:0,side:2},{x:0,y:0,side:1},{x:0,y:0,side:3}],outputs:[{x:0,y:0,side:0}]},
   logisticsBridge:{width:1,height:1,inputs:[{x:0,y:0,side:2},{x:0,y:0,side:3}],outputs:[{x:0,y:0,side:0},{x:0,y:0,side:1}]},
   pipeSplitter:{width:1,height:1,inputs:[{x:0,y:0,side:2,transport:"pipe"}],outputs:[{x:0,y:0,side:0,transport:"pipe"},{x:0,y:0,side:1,transport:"pipe"},{x:0,y:0,side:3,transport:"pipe"}]},
   pipeMerger:{width:1,height:1,inputs:[{x:0,y:0,side:2,transport:"pipe"},{x:0,y:0,side:1,transport:"pipe"},{x:0,y:0,side:3,transport:"pipe"}],outputs:[{x:0,y:0,side:0,transport:"pipe"}]},
   pipeBridge:{width:1,height:1,inputs:[{x:0,y:0,side:2,transport:"pipe"},{x:0,y:0,side:3,transport:"pipe"}],outputs:[{x:0,y:0,side:0,transport:"pipe"},{x:0,y:0,side:1,transport:"pipe"}]},
+  itemLimiter:{width:1,height:1,inputs:[{x:0,y:0,side:2}],outputs:[{x:0,y:0,side:0}]},
+  pipeLimiter:{width:1,height:1,inputs:[{x:0,y:0,side:2,transport:"pipe"}],outputs:[{x:0,y:0,side:0,transport:"pipe"}]},
+  undergroundPipeInlet:{width:3,height:3,inputs:[{x:0,y:1,side:2,transport:"pipe"}],outputs:[]},
+  undergroundPipeOutlet:{width:3,height:3,inputs:[],outputs:[{x:2,y:1,side:0,transport:"pipe"}]},
+  multiUndergroundPipeInlet:{width:3,height:5,inputs:[{x:0,y:1,side:2,transport:"pipe"},{x:0,y:3,side:2,transport:"pipe"}],outputs:[]},
+  multiUndergroundPipeOutlet:{width:3,height:5,inputs:[],outputs:[{x:2,y:1,side:0,transport:"pipe"},{x:2,y:3,side:0,transport:"pipe"}]},
 };
 
 function rotatePort(port:PortSpec,width:number,height:number,rotation:Direction) {
@@ -518,25 +690,37 @@ const tools: { kind: Kind; label: string; type:"tool"|"device"; category?:Device
   { kind: "splitter", label: "分流器", type:"device", category:"仓储存取", glyph: "S", desc: "1 入 · 3 出", image:"/assets/machines/splitter.webp" },
   { kind: "merger", label: "汇流器", type:"device", category:"仓储存取", glyph: "M", desc: "3 入 · 1 出", image:"/assets/machines/merger.webp" },
   { kind: "logisticsBridge", label: "物流桥", type:"device", category:"仓储存取", glyph: "BR", desc: "两轴独立直通 · 无库存", image:"/assets/machines/logistics-bridge.webp" },
+  { kind: "itemLimiter", label: "物品准入口", type:"device", category:"仓储存取", glyph: "IL", desc: "1×1 · 物品与流速限制", image:"/assets/machines/item-limiter.webp" },
   { kind: "pipeSplitter", label: "管道分流器", type:"device", category:"仓储存取", glyph: "PS", desc: "1 入 · 至多 3 出", image:"/assets/machines/pipe-splitter.svg" },
   { kind: "pipeMerger", label: "管道汇流器", type:"device", category:"仓储存取", glyph: "PM", desc: "至多 3 入 · 1 出", image:"/assets/machines/pipe-merger.svg" },
   { kind: "pipeBridge", label: "管道桥", type:"device", category:"仓储存取", glyph: "PB", desc: "两轴独立直通 · 无库存", image:"/assets/machines/pipe-bridge.svg" },
+  { kind: "pipeLimiter", label: "管道准入口", type:"device", category:"仓储存取", glyph: "PLM", desc: "1×1 · 介质与流速限制", image:"/assets/machines/pipe-limiter.webp" },
+  { kind: "undergroundPipeInlet", label: "暗管入口", type:"device", category:"仓储存取", glyph: "UI", desc: "3×3 · 单管道输入", image:"/assets/machines/underground-pipe-inlet.webp" },
+  { kind: "undergroundPipeOutlet", label: "暗管出口", type:"device", category:"仓储存取", glyph: "UO", desc: "3×3 · 单管道输出", image:"/assets/machines/underground-pipe-outlet.webp" },
+  { kind: "multiUndergroundPipeInlet", label: "多口暗管入口", type:"device", category:"仓储存取", glyph: "MUI", desc: "3×5 · 双管道输入", image:"/assets/machines/multi-underground-pipe-inlet.webp" },
+  { kind: "multiUndergroundPipeOutlet", label: "多口暗管出口", type:"device", category:"仓储存取", glyph: "MUO", desc: "3×5 · 双管道输出", image:"/assets/machines/multi-underground-pipe-outlet.webp" },
   { kind: "refiner", label: "精炼炉", type:"device", category:"基础生产", glyph: "R", desc: "矿石 → 金属块", image:"/assets/machines/refinery.webp" },
   { kind: "crusher", label: "粉碎机", type:"device", category:"基础生产", glyph: "CR", desc: "3×3 · 固体粉碎", image:"/assets/machines/crusher.webp" },
   { kind: "fitter", label: "配件机", type:"device", category:"基础生产", glyph: "F", desc: "金属块 → 零件", image:"/assets/machines/assembler.webp" },
-  { kind: "molder", label: "塑形机", type:"device", category:"基础生产", glyph: "MO", desc: "3×3 · 容器塑形", image:"/assets/machines/molder.webp" },
+  { kind: "molder", label: "塑形机", type:"device", category:"基础生产", glyph: "MO", desc: "3×3 · 固体/气体模式", image:"/assets/machines/molder.webp" },
   { kind: "seedPicker", label: "采种机", type:"device", category:"基础生产", glyph: "SP", desc: "5×5 · 植物采种", image:"/assets/machines/seed-picker.webp" },
   { kind: "planter", label: "种植机", type:"device", category:"基础生产", glyph: "PL", desc: "5×5 · 固体/液体模式", image:"/assets/machines/planter.webp" },
   { kind: "gearAssembler", label: "装备原件机", type:"device", category:"合成制造", glyph: "GA", desc: "6×4 · 双物料合成", image:"/assets/machines/gear-assembler.webp" },
   { kind: "filler", label: "灌装机", type:"device", category:"合成制造", glyph: "FI", desc: "4×6 · 固体与流体输入", image:"/assets/machines/filler.webp" },
-  { kind: "dismantler", label: "拆解机", type:"device", category:"合成制造", glyph: "DM", desc: "6×4 · 瓶体与流体拆解" },
+  { kind: "dismantler", label: "拆解机", type:"device", category:"合成制造", glyph: "DM", desc: "4×6 · 容器与介质拆解", image:"/assets/machines/dismantler.webp" },
   { kind: "sealer", label: "封装机", type:"device", category:"合成制造", glyph: "PK", desc: "6×4 · 电池与爆炸物", image:"/assets/machines/sealer.webp" },
   { kind: "grinder", label: "研磨机", type:"device", category:"合成制造", glyph: "GR", desc: "6×4 · 粉末精细研磨", image:"/assets/machines/grinder.webp" },
   { kind: "reactor", label: "反应池", type:"device", category:"合成制造", glyph: "RC", desc: "5×5 · 固液反应", image:"/assets/machines/reactor.webp" },
-  { kind: "purifier", label: "提纯机", type:"device", category:"合成制造", glyph: "PU", desc: "5×5 · 双液体输出" },
-  { kind: "waterTreatment", label: "废水处理机", type:"device", category:"基础生产", glyph: "WT", desc: "3×3 · 污水 30/min" },
+  { kind: "expandedReactor", label: "扩容反应池", type:"device", category:"合成制造", glyph: "ERC", desc: "6×5 · 8 槽并行配方", image:"/assets/machines/expanded-reactor.webp" },
+  { kind: "purifier", label: "提纯机", type:"device", category:"合成制造", glyph: "PU", desc: "5×5 · 气体/液体提纯", image:"/assets/machines/purifier.webp" },
+  { kind: "waterTreatment", label: "废水处理机", type:"device", category:"基础生产", glyph: "WT", desc: "3×3 · 废液无害化", image:"/assets/machines/water-treatment.webp" },
   { kind: "forge", label: "天有洪炉", type:"device", category:"合成制造", glyph: "FS", desc: "5×5 · 息壤合成", image:"/assets/machines/forge-of-the-sky.webp" },
   { kind: "waterPump", label: "水泵", type:"device", category:"资源开采", glyph: "WP", desc: "2×2 · 清水 60/min", image:"/assets/machines/water-pump.svg" },
+  { kind: "acidWaterPump", label: "二型耐酸水泵", type:"device", category:"资源开采", glyph: "AWP", desc: "2×2 · 清水/沉积酸", image:"/assets/machines/water-pump.svg" },
+  { kind: "gasDisperser", label: "气体散布机", type:"device", category:"功能设备", glyph: "GD", desc: "3×3 · 14×14 环境", image:"/assets/machines/gas-disperser.webp" },
+  { kind: "liquidGasConverter", label: "液气转化机", type:"device", category:"合成制造", glyph: "LGC", desc: "5×5 · 液体/气体互转", image:"/assets/machines/liquid-gas-converter.webp" },
+  { kind: "solidGasConverter", label: "固气转化机", type:"device", category:"合成制造", glyph: "SGC", desc: "5×5 · 固体/气体互转", image:"/assets/machines/solid-gas-converter.webp" },
+  { kind: "gasReactor", label: "气体反应炉", type:"device", category:"合成制造", glyph: "GRX", desc: "5×5 · 气体反应", image:"/assets/machines/gas-reactor.webp" },
   { kind: "powerPole", label: "供电桩", type:"device", category:"电力供应", glyph: "PWR", desc: "2×2 · 供电范围 12×12", image:"/assets/machines/supply-pole.webp" },
 ];
 
@@ -564,9 +748,13 @@ const initial = (() => {
 })();
 
 const isTransport = (kind?: Kind) => kind === "belt" || kind === "pipe";
-const BELT_LOGISTICS = new Set<Kind>(["splitter","merger","logisticsBridge"]);
-const PIPE_LOGISTICS = new Set<Kind>(["pipeSplitter","pipeMerger","pipeBridge"]);
-const isLogistics=(kind:Kind)=>BELT_LOGISTICS.has(kind)||PIPE_LOGISTICS.has(kind);
+const BELT_LOGISTICS = new Set<Kind>(["splitter","merger","logisticsBridge","itemLimiter"]);
+const PIPE_LOGISTICS = new Set<Kind>(["pipeSplitter","pipeMerger","pipeBridge","pipeLimiter"]);
+const PIPE_TRANSFER_DEVICES = new Set<Kind>(["undergroundPipeInlet","undergroundPipeOutlet","multiUndergroundPipeInlet","multiUndergroundPipeOutlet"]);
+const isLogistics=(kind:Kind)=>BELT_LOGISTICS.has(kind)||PIPE_LOGISTICS.has(kind)||PIPE_TRANSFER_DEVICES.has(kind);
+const UNDERGROUND_INLETS=new Set<Kind>(["undergroundPipeInlet","multiUndergroundPipeInlet"]);
+const UNDERGROUND_OUTLETS=new Set<Kind>(["undergroundPipeOutlet","multiUndergroundPipeOutlet"]);
+const undergroundPairCompatible=(source:Kind,target:Kind)=>(source==="undergroundPipeInlet"&&target==="undergroundPipeOutlet")||(source==="undergroundPipeOutlet"&&target==="undergroundPipeInlet")||(source==="multiUndergroundPipeInlet"&&target==="multiUndergroundPipeOutlet")||(source==="multiUndergroundPipeOutlet"&&target==="multiUndergroundPipeInlet");
 const isBridge=(kind:Kind|undefined)=>kind==="logisticsBridge"||kind==="pipeBridge";
 const logisticsTransport=(kind:Kind):TransportKind|null=>BELT_LOGISTICS.has(kind)?"belt":PIPE_LOGISTICS.has(kind)?"pipe":null;
 const straightDirection=(cell?:Cell):Direction|null=>cell&&isTransport(cell.kind)&&cell.entry===opposite(cell.rotation)?cell.rotation:null;
@@ -653,6 +841,7 @@ export default function Home() {
   const [catalogDrag,setCatalogDrag]=useState<Kind|null>(null);
   const [catalogPreview,setCatalogPreview]=useState<Point|null>(null);
   const catalogDragKindRef=useRef<Kind|null>(null);
+  const catalogPointerRef=useRef<{pointerId:number;startX:number;startY:number;dragged:boolean}|null>(null);
   const catalogDropRef=useRef<(x:number,y:number,kind:Kind)=>void>(()=>{});
   const gridRef=useRef<HTMLDivElement>(null);
   const radialHoldTimer=useRef<number|null>(null);
@@ -672,13 +861,14 @@ export default function Home() {
       const element=gridRef.current;if(!element)return null;
       const layout=EQUIPMENT_LAYOUTS[kind],width=layout?.width??(kind==="powerPole"?2:1),height=layout?.height??(kind==="powerPole"?2:1),rect=element.getBoundingClientRect();
       if(clientX<rect.left||clientY<rect.top||clientX>rect.right||clientY>rect.bottom)return null;
+      const hit=document.elementFromPoint(clientX,clientY);if(!hit||!element.contains(hit))return null;
       const x=Math.max(0,Math.min(cols-width,Math.floor((clientX-rect.left)/rect.width*cols))),y=Math.max(0,Math.min(rows-height,Math.floor((clientY-rect.top)/rect.height*rows)));
       const valid=Array.from({length:width*height},(_,index)=>keyOf(x+index%width,y+Math.floor(index/width))).every((key)=>catalogCellValid(kind,key,grid,pipeGrid));
       return{x,y,valid};
     };
-    const move=(event:MouseEvent|PointerEvent)=>{const kind=catalogDragKindRef.current;if(!kind)return;const point=pointAt(event.clientX,event.clientY,kind);setCatalogPreview(point?{x:point.x,y:point.y}:null)};
-    const finish=(event:MouseEvent|PointerEvent)=>{const kind=catalogDragKindRef.current;if(!kind)return;const point=pointAt(event.clientX,event.clientY,kind);catalogDragKindRef.current=null;setCatalogDrag(null);setCatalogPreview(null);if(point?.valid)catalogDropRef.current(point.x,point.y,kind);else{setSelected("belt");setNotice(point?"目标占地与现有设备或物流线路冲突":"拖动已取消 · 请在画布网格内释放")}};
-    const cancel=()=>{if(catalogDragKindRef.current===null)return;catalogDragKindRef.current=null;setCatalogDrag(null);setCatalogPreview(null);setSelected("belt")};
+    const move=(event:MouseEvent|PointerEvent)=>{const kind=catalogDragKindRef.current,gesture=catalogPointerRef.current;if(!kind||!gesture)return;if(!gesture.dragged&&Math.hypot(event.clientX-gesture.startX,event.clientY-gesture.startY)<6)return;gesture.dragged=true;const point=pointAt(event.clientX,event.clientY,kind);setCatalogPreview(point?{x:point.x,y:point.y}:null)};
+    const finish=(event:MouseEvent|PointerEvent)=>{const kind=catalogDragKindRef.current,gesture=catalogPointerRef.current;if(!kind)return;const point=gesture?.dragged?pointAt(event.clientX,event.clientY,kind):null;catalogDragKindRef.current=null;catalogPointerRef.current=null;setCatalogDrag(null);setCatalogPreview(null);if(point?.valid)catalogDropRef.current(point.x,point.y,kind);else{setSelected("belt");setNotice(gesture?.dragged?(point?"目标占地与现有设备或物流线路冲突":"拖动已取消 · 请在可见画布网格内释放"):"设备仅支持拖动添加")}};
+    const cancel=()=>{if(catalogDragKindRef.current===null)return;catalogDragKindRef.current=null;catalogPointerRef.current=null;setCatalogDrag(null);setCatalogPreview(null);setSelected("belt")};
     window.addEventListener("pointermove",move);window.addEventListener("mousemove",move);window.addEventListener("pointerup",finish);window.addEventListener("mouseup",finish);window.addEventListener("pointercancel",cancel);
     return()=>{window.removeEventListener("pointermove",move);window.removeEventListener("mousemove",move);window.removeEventListener("pointerup",finish);window.removeEventListener("mouseup",finish);window.removeEventListener("pointercancel",cancel)};
   },[cols,grid,pipeGrid,rows]);
@@ -716,6 +906,10 @@ export default function Home() {
       const depotCell=sourcePort?.entityKind==="depot"?Object.values(grid).find((cell)=>cell.id===sourcePort.entityId):undefined;
       const sourceDefinition=sourcePort&&sourcePort.entityKind in MACHINE_DEFINITIONS?MACHINE_DEFINITIONS[sourcePort.entityKind as ProductionKind]:undefined;
       const sourceCell=sourceDefinition?Object.values(grid).find((cell)=>cell.id===sourcePort?.entityId):undefined;
+      if(sourcePort&&sourceCell&&isSharedBufferMachine(sourcePort.entityKind)){
+        const selectedItemId=(sourceCell.outputFilters??defaultOutputFilters(sourceDefinition!))[outputFilterKey(sourcePort,kind)];
+        return INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===selectedItemId&&itemTransport(candidate.id)===kind);
+      }
       const sourceRecipe=sourceDefinition?activeRecipe(sourceDefinition,sourceCell?.recipeId):undefined;
       const indexedOutput=sourcePort?.outputIndex==null?undefined:sourceRecipe?.outputs[sourcePort.outputIndex];
       const sourceOutput=indexedOutput&&itemTransport(indexedOutput.itemId)===kind?indexedOutput:sourceRecipe?.outputs.find((output)=>itemTransport(output.itemId)===kind);
@@ -779,6 +973,19 @@ export default function Home() {
       return {id,x:minX-5,y:minY-5,size:12};
     });
   },[grid]);
+  const gasZones = useMemo<GasZone[]>(()=>{
+    const devices=new Map<string,{x:number;y:number}[]>();
+    Object.entries(grid).forEach(([key,cell])=>{
+      if(cell.kind!=="gasDisperser")return;
+      const [x,y]=key.split(",").map(Number),positions=devices.get(cell.id)??[];
+      positions.push({x,y});devices.set(cell.id,positions);
+    });
+    return [...devices.entries()].map(([id,positions])=>{
+      const minX=Math.min(...positions.map(({x})=>x)),minY=Math.min(...positions.map(({y})=>y)),input=simulation.inventories[id]?.input??{},cell=Object.values(grid).find((candidate)=>candidate.id===id),definition=MACHINE_DEFINITIONS.gasDisperser,currentRecipe=activeRecipe(definition,cell?.recipeId);
+      const itemId=Object.keys(input).find((candidate)=>(input[candidate]??0)>0)??((simulation.processes[id]??0)>0?currentRecipe.inputs[0]?.itemId:undefined);
+      return {id,x:minX-5,y:minY-5,size:14,itemId};
+    });
+  },[grid,simulation.inventories,simulation.processes]);
   useEffect(()=>{
     if(!running)return;
     const timer=window.setInterval(()=>{
@@ -786,8 +993,10 @@ export default function Home() {
       setGrid((old)=>{
         const choices=new Map<string,string>();
         Object.values(old).forEach((cell)=>{
-          if(choices.has(cell.id)||!(cell.kind in MACHINE_DEFINITIONS)||(snapshot.processes[cell.id]??0)>0)return;
-          const definition=MACHINE_DEFINITIONS[cell.kind as ProductionKind],input=snapshot.inventories[cell.id]?.input??{},nextRecipe=automaticRecipe(definition,cell.recipeId,input);
+          if(choices.has(cell.id)||!(cell.kind in MACHINE_DEFINITIONS))return;
+          const definition=MACHINE_DEFINITIONS[cell.kind as ProductionKind];
+          if(definition.autoSchedule||(snapshot.processes[cell.id]??0)>0)return;
+          const input=snapshot.inventories[cell.id]?.input??{},nextRecipe=automaticRecipe(definition,cell.recipeId,input);
           if(nextRecipe.id!==activeRecipe(definition,cell.recipeId).id)choices.set(cell.id,nextRecipe.id);
         });
         return choices.size?Object.fromEntries(Object.entries(old).map(([key,cell])=>[key,choices.has(cell.id)?{...cell,recipeId:choices.get(cell.id)}:cell])):old;
@@ -797,6 +1006,7 @@ export default function Home() {
       const inventories=Object.fromEntries(Object.entries(previous.inventories).map(([id,inventory])=>[id,{input:{...inventory.input},output:{...inventory.output}}]));
       const processes={...previous.processes};
       const routeCursor={...previous.routeCursor};
+      const recipeCursor={...previous.recipeCursor};
       const laneReadyAt={...previous.laneReadyAt};
       const routeTransfers=Object.fromEntries(Object.entries(previous.routeTransfers).map(([routeId,ticks])=>[routeId,ticks.filter((transferTick)=>tick-transferTick<=60*SIM_TICKS_PER_SECOND)]));
       const producedThisTick:Record<string,number>={};
@@ -810,20 +1020,60 @@ export default function Home() {
         const [x,y]=key.split(",").map(Number),kind=cell.kind as ProductionKind;
         const entity=productionEntities.get(cell.id)??{kind,positions:[],cell};entity.positions.push({x,y});productionEntities.set(cell.id,entity);
       });
+      const acidEnvironmentZones:PowerZone[]=[];
+      productionEntities.forEach((entity,id)=>{
+        if(entity.kind!=="gasDisperser")return;
+        const recipe=activeRecipe(MACHINE_DEFINITIONS.gasDisperser,entity.cell.recipeId),inventory=inventories[id]?.input??{},activeAcid=(inventory["acid-gas"]??0)>0||((processes[id]??0)>0&&recipe.inputs[0]?.itemId==="acid-gas");
+        if(!activeAcid)return;
+        const minX=Math.min(...entity.positions.map(({x})=>x)),minY=Math.min(...entity.positions.map(({y})=>y));acidEnvironmentZones.push({id,x:minX-5,y:minY-5,size:14});
+      });
       entityKinds.forEach((kind,id)=>{if(isBridge(kind))delete inventories[id]});
       productionEntities.forEach((entity,id)=>{
-        const definition=MACHINE_DEFINITIONS[entity.kind],currentRecipe=activeRecipe(definition,entity.cell.recipeId),inventory=ensureInventory(id);
+        const definition=MACHINE_DEFINITIONS[entity.kind],inventory=ensureInventory(id);
         const minX=Math.min(...entity.positions.map(({x})=>x)),minY=Math.min(...entity.positions.map(({y})=>y));
-        const powered=powerZones.some((zone)=>zone.x<minX+(entity.cell.width??definition.width)&&zone.x+zone.size>minX&&zone.y<minY+(entity.cell.height??definition.height)&&zone.y+zone.size>minY);
-        const inputsReady=currentRecipe.inputs.every((requirement)=>(inventory.input[requirement.itemId]??0)>=requirement.amount);
-        const outputTotal=Object.values(inventory.output).reduce((sum,quantity)=>sum+quantity,0);
-        const outputAmount=currentRecipe.outputs.reduce((sum,output)=>sum+output.amount,0);
-        if(!powered||!inputsReady||outputTotal+outputAmount>OUTPUT_CAPACITY)return;
-        const nextProgress=(processes[id]??0)+1;
-        if(nextProgress<currentRecipe.durationTicks){processes[id]=nextProgress;return}
-        currentRecipe.inputs.forEach((requirement)=>{inventory.input[requirement.itemId]=Math.max(0,(inventory.input[requirement.itemId]??0)-requirement.amount);addQuantity(consumedThisTick,requirement.itemId,requirement.amount)});
-        currentRecipe.outputs.forEach((output)=>{inventory.output[output.itemId]=(inventory.output[output.itemId]??0)+output.amount;addQuantity(producedThisTick,output.itemId,output.amount)});
-        processes[id]=0;
+        const powered=definition.requiresPower===false||powerZones.some((zone)=>zone.x<minX+(entity.cell.width??definition.width)&&zone.x+zone.size>minX&&zone.y<minY+(entity.cell.height??definition.height)&&zone.y+zone.size>minY);
+        const environmentReady=entity.kind!=="gasReactor"||acidEnvironmentZones.some((zone)=>zone.x<minX+(entity.cell.width??definition.width)&&zone.x+zone.size>minX&&zone.y<minY+(entity.cell.height??definition.height)&&zone.y+zone.size>minY);
+        if(!powered||!environmentReady)return;
+        let candidates:MachineRecipe[];
+        if(definition.autoSchedule==="parallel"){
+          const active=definition.recipes.filter((candidate)=>(processes[`${id}::${candidate.id}`]??0)>0),working={...inventory.input},starters:MachineRecipe[]=[];let projected={...inventory.input},capacityBlocked=false;
+          active.forEach((candidate)=>{const next=bufferWithOutputs(entity.kind,projected,candidate.outputs);if(next)projected=next;else capacityBlocked=true});
+          definition.recipes.forEach((candidate)=>{
+            if(capacityBlocked||active.includes(candidate)||active.length+starters.length>=(definition.parallelSlots??definition.recipes.length))return;
+            const nextProjected=bufferAfterRecipe(entity.kind,projected,candidate);
+            if(!candidate.inputs.every((requirement)=>(working[requirement.itemId]??0)>=requirement.amount)||!nextProjected)return;
+            candidate.inputs.forEach((requirement)=>{working[requirement.itemId]=Math.max(0,(working[requirement.itemId]??0)-requirement.amount)});projected=nextProjected;starters.push(candidate);
+          });
+          candidates=[...active,...starters];
+        }else if(definition.autoSchedule==="roundRobin"){
+          const active=definition.recipes.find((candidate)=>(processes[`${id}::${candidate.id}`]??0)>0);
+          if(active)candidates=[active];
+          else{const cursor=(recipeCursor[id]??0)%definition.recipes.length,ordered=definition.recipes.map((_,index)=>definition.recipes[(cursor+index)%definition.recipes.length]),ready=ordered.find((candidate)=>candidate.inputs.every((requirement)=>(inventory.input[requirement.itemId]??0)>=requirement.amount)&&Boolean(bufferAfterRecipe(entity.kind,inventory.input,candidate)));candidates=ready?[ready]:[]}
+        }else candidates=[activeRecipe(definition,entity.cell.recipeId)];
+        candidates.forEach((currentRecipe)=>{
+          const sharedBuffer=Boolean(definition.autoSchedule),processKey=sharedBuffer?`${id}::${currentRecipe.id}`:id;
+          const inputsReady=currentRecipe.inputs.every((requirement)=>(inventory.input[requirement.itemId]??0)>=requirement.amount);
+          if(sharedBuffer){
+            const existingProgress=processes[processKey]??0;
+            if(existingProgress===0){
+              if(!inputsReady||!bufferAfterRecipe(entity.kind,inventory.input,currentRecipe))return;
+              currentRecipe.inputs.forEach((requirement)=>{inventory.input[requirement.itemId]=Math.max(0,(inventory.input[requirement.itemId]??0)-requirement.amount);addQuantity(consumedThisTick,requirement.itemId,requirement.amount)});
+            }
+            const nextProgress=Math.min(currentRecipe.durationTicks,existingProgress+1);
+            if(nextProgress<currentRecipe.durationTicks){processes[processKey]=nextProgress;return}
+            const completedBuffer=bufferWithOutputs(entity.kind,inventory.input,currentRecipe.outputs);
+            if(!completedBuffer){processes[processKey]=currentRecipe.durationTicks;return}
+            inventory.input=completedBuffer;currentRecipe.outputs.forEach((output)=>addQuantity(producedThisTick,output.itemId,output.amount));processes[processKey]=0;
+            if(definition.autoSchedule==="roundRobin")recipeCursor[id]=(definition.recipes.indexOf(currentRecipe)+1)%definition.recipes.length;
+            return;
+          }
+          const outputTotal=totalInventory(inventory.output),outputAmount=currentRecipe.outputs.reduce((sum,output)=>sum+output.amount,0);
+          if(!inputsReady||outputTotal+outputAmount>outputCapacityFor(entity.kind))return;
+          const nextProgress=(processes[processKey]??0)+1;
+          if(nextProgress<currentRecipe.durationTicks){processes[processKey]=nextProgress;return}
+          currentRecipe.inputs.forEach((requirement)=>{inventory.input[requirement.itemId]=Math.max(0,(inventory.input[requirement.itemId]??0)-requirement.amount);addQuantity(consumedThisTick,requirement.itemId,requirement.amount)});
+          currentRecipe.outputs.forEach((output)=>{inventory.output[output.itemId]=(inventory.output[output.itemId]??0)+output.amount;addQuantity(producedThisTick,output.itemId,output.amount)});processes[processKey]=0;
+        });
       });
       const previousByRoute=new Map<string,TransitItem[]>();
       previous.transits.forEach((transit)=>{const lane=previousByRoute.get(transit.routeId)??[];lane.push(transit);previousByRoute.set(transit.routeId,lane)});
@@ -831,7 +1081,8 @@ export default function Home() {
       connectedFlowRoutes.forEach((route)=>{
         const lane=previousByRoute.get(route.id)??[];
         const target=route.targetPort&&!isBridge(route.targetPort.entityKind)?ensureInventory(route.targetPort.entityId):null;
-        const canExit=Boolean(target&&inputTotalFor(target.input,route.kind)<inputCapacityFor(entityKinds.get(route.targetPort!.entityId),route.kind));
+        const leading=lane.length?lane.reduce((front,candidate)=>candidate.position>front.position?candidate:front):null,targetKind=route.targetPort?entityKinds.get(route.targetPort.entityId):undefined;
+        const canExit=Boolean(target&&(!leading||bufferCanAccept(targetKind,target.input,leading.itemId,1)));
          const advanced=route.kind==="pipe"?advancePipeLane(lane,route.cells.length,canExit):advanceBeltLane(lane,route.cells.length,canExit);
         activeByRoute.set(route.id,advanced.active);
         if(target)advanced.delivered.forEach((transit)=>{target.input[transit.itemId]=(target.input[transit.itemId]??0)+1});
@@ -849,8 +1100,22 @@ export default function Home() {
         laneReadyAt[outgoing.id]=nextLaneReadyTick(tick,outgoing.kind==="pipe"?PIPE_HEADWAY_TICKS:BELT_HEADWAY_TICKS);
         routeTransfers[outgoing.id]=[...(routeTransfers[outgoing.id]??[]),tick];
       });
+      const transferredUnderground=new Set<string>();
+      Object.values(grid).forEach((cell)=>{
+        if(!UNDERGROUND_INLETS.has(cell.kind)||!cell.pairedEntityId||transferredUnderground.has(cell.id))return;
+        const targetKind=entityKinds.get(cell.pairedEntityId);
+        if(!targetKind||!undergroundPairCompatible(cell.kind,targetKind))return;
+        const targetCell=Object.values(grid).find((candidate)=>candidate.id===cell.pairedEntityId);
+        if(targetCell?.pairedEntityId!==cell.id)return;
+        const tunnelKey=`underground:${cell.id}:${cell.pairedEntityId}`;
+        if((laneReadyAt[tunnelKey]??0)>tick)return;
+        const source=ensureInventory(cell.id),target=ensureInventory(cell.pairedEntityId),itemId=Object.keys(source.input).find((candidate)=>(source.input[candidate]??0)>0&&itemTransport(candidate)==="pipe");
+        if(!itemId||inputTotalFor(target.input,"pipe")>=inputCapacityFor(targetKind,"pipe"))return;
+        source.input[itemId]=Math.max(0,(source.input[itemId]??0)-1);addQuantity(target.input,itemId,1);
+        laneReadyAt[tunnelKey]=nextLaneReadyTick(tick,PIPE_HEADWAY_TICKS);transferredUnderground.add(cell.id);
+      });
       const groups=new Map<string,ConnectedFlowRoute[]>();
-      connectedFlowRoutes.forEach((route)=>{if(!route.valid||!route.itemId||!route.sourcePort||isBridge(route.sourcePort.entityKind))return;const list=groups.get(route.sourcePort.entityId)??[];list.push(route);groups.set(route.sourcePort.entityId,list)});
+      connectedFlowRoutes.forEach((route)=>{if(!route.valid||!route.sourcePort||isBridge(route.sourcePort.entityKind)||(!route.itemId&&!UNDERGROUND_OUTLETS.has(route.sourcePort.entityKind)))return;const list=groups.get(route.sourcePort.entityId)??[];list.push(route);groups.set(route.sourcePort.entityId,list)});
       groups.forEach((routes,sourceId)=>{
         const sourceKind=entityKinds.get(sourceId),sourceInventory=ensureInventory(sourceId);
         const ready=new Set(routes.filter((route)=>{
@@ -858,25 +1123,25 @@ export default function Home() {
            return route.kind==="pipe"?pipeLaneCanAccept(activeByRoute.get(route.id)??[],route.cells.length):beltLaneCanAccept(activeByRoute.get(route.id)??[],route.cells.length);
         }).map((route)=>route.id));
         if(!ready.size)return;
-        const sourceBucket=sourceKind&&sourceKind in MACHINE_DEFINITIONS?sourceInventory.output:sourceInventory.input;
+        const sourceBucket=isSharedBufferMachine(sourceKind)?sourceInventory.input:sourceKind&&sourceKind in MACHINE_DEFINITIONS?sourceInventory.output:sourceInventory.input;
         const cursor=(routeCursor[sourceId]??0)%routes.length;
         const ordered=routes.map((_,index)=>routes[(cursor+index)%routes.length]).filter((route)=>ready.has(route.id));
         const available={...sourceBucket};
-        const dispatched=ordered.filter((route)=>{
-          if(sourceKind==="depot")return true;
-          const itemId=route.itemId!,stock=available[itemId]??0;
-          if(stock<=0)return false;
-          available[itemId]=stock-1;return true;
+        const dispatched=ordered.flatMap((route)=>{
+          if(sourceKind==="depot")return route.itemId?[{route,itemId:route.itemId}]:[];
+          const itemId=isSharedBufferMachine(sourceKind)?((available[route.itemId??""]??0)>0?route.itemId:undefined):(available[route.itemId??""]??0)>0?route.itemId:Object.keys(available).find((candidate)=>itemTransport(candidate)===route.kind&&(available[candidate]??0)>0);
+          if(!itemId)return [];
+          available[itemId]=(available[itemId]??0)-1;return [{route,itemId}];
         });
-        dispatched.forEach((route)=>{
-          const transit={id:crypto.randomUUID(),routeId:route.id,itemId:route.itemId!,position:0,previousPosition:0};
+        dispatched.forEach(({route,itemId})=>{
+          const transit={id:crypto.randomUUID(),routeId:route.id,itemId,position:0,previousPosition:0};
           activeByRoute.set(route.id,[...(activeByRoute.get(route.id)??[]),transit]);
           laneReadyAt[route.id]=nextLaneReadyTick(tick,route.kind==="pipe"?PIPE_HEADWAY_TICKS:BELT_HEADWAY_TICKS);
           routeTransfers[route.id]=[...(routeTransfers[route.id]??[]),tick];
-          if(sourceKind==="depot")addQuantity(producedThisTick,route.itemId!,1);
+          if(sourceKind==="depot")addQuantity(producedThisTick,itemId,1);
         });
-        if(sourceKind!=="depot")dispatched.forEach((route)=>{const itemId=route.itemId!;sourceBucket[itemId]=Math.max(0,(sourceBucket[itemId]??0)-1)});
-        if(dispatched.length)routeCursor[sourceId]=(routes.indexOf(dispatched[dispatched.length-1])+1)%routes.length;
+        if(sourceKind!=="depot")dispatched.forEach(({itemId})=>{sourceBucket[itemId]=Math.max(0,(sourceBucket[itemId]??0)-1)});
+        if(dispatched.length)routeCursor[sourceId]=(routes.indexOf(dispatched[dispatched.length-1].route)+1)%routes.length;
       });
       const second=Math.floor(tick/SIM_TICKS_PER_SECOND);
       let itemStats=previous.itemStats??[];
@@ -888,7 +1153,7 @@ export default function Home() {
       if(itemStats[0]?.second<second-STATS_RETENTION_SECONDS)itemStats=itemStats.filter((sample)=>sample.second>=second-STATS_RETENTION_SECONDS);
       // Storage-port delivery is inventory transfer, not consumption; recipe removal is the only consumption event.
       const activeTransits=[...activeByRoute.values()].flat();
-      return {tick,inventories,processes,transits:activeTransits,routeCursor,laneReadyAt,routeTransfers,itemStats};
+      return {tick,inventories,processes,transits:activeTransits,routeCursor,recipeCursor,laneReadyAt,routeTransfers,itemStats};
       });
     },SIM_TICK_MS);
     return ()=>window.clearInterval(timer);
@@ -903,21 +1168,28 @@ export default function Home() {
     });
     const states:Record<string,MachineState>={};
     entities.forEach(({cell,positions},id)=>{
-      const kind=cell.kind as ProductionKind,definition=MACHINE_DEFINITIONS[kind],currentRecipe=activeRecipe(definition,cell.recipeId);
+      const kind=cell.kind as ProductionKind,definition=MACHINE_DEFINITIONS[kind];
       const width=cell.width??definition.width, height=cell.height??definition.height;
       const inventory=simulation.inventories[id]??{input:{},output:{}};
       const solidInputTotal=inputTotalFor(inventory.input,"belt"),fluidInputTotal=inputTotalFor(inventory.input,"pipe"),outputTotal=Object.values(inventory.output).reduce((sum,quantity)=>sum+quantity,0);
-      const hasInput=currentRecipe.inputs.every((requirement)=>(inventory.input[requirement.itemId]??0)>=requirement.amount);
-      const hasOutput=outputTotal+currentRecipe.outputs.reduce((sum,output)=>sum+output.amount,0)<=OUTPUT_CAPACITY;
+      const scheduled=Boolean(definition.autoSchedule),activeScheduled=scheduled?definition.recipes.filter((candidate)=>(simulation.processes[`${id}::${candidate.id}`]??0)>0):[];
+      const readyRecipes=scheduled?definition.recipes.filter((candidate)=>candidate.inputs.every((requirement)=>(inventory.input[requirement.itemId]??0)>=requirement.amount)&&Boolean(bufferAfterRecipe(kind,inventory.input,candidate))):[];
+      const currentRecipe=activeScheduled[0]??readyRecipes[0]??activeRecipe(definition,cell.recipeId);
+      const hasInput=scheduled?activeScheduled.length>0||readyRecipes.length>0:currentRecipe.inputs.every((requirement)=>(inventory.input[requirement.itemId]??0)>=requirement.amount);
+      const blockedScheduled=scheduled&&activeScheduled.some((candidate)=>(simulation.processes[`${id}::${candidate.id}`]??0)>=candidate.durationTicks&&!bufferWithOutputs(kind,inventory.input,candidate.outputs));
+      const deadlockedSlots=scheduled&&!activeScheduled.length&&!readyRecipes.length&&occupiedBufferSlots(inventory.input)>=bufferSlotsFor(kind);
+      const hasOutput=scheduled?!blockedScheduled:outputTotal+currentRecipe.outputs.reduce((sum,output)=>sum+output.amount,0)<=outputCapacityFor(kind);
       const minX=Math.min(...positions.map(({x})=>x)),minY=Math.min(...positions.map(({y})=>y));
-      const powered=powerZones.some((zone)=>zone.x<minX+width&&zone.x+zone.size>minX&&zone.y<minY+height&&zone.y+zone.size>minY);
-      const progressTicks=simulation.processes[id]??0;
-      const status:MachineState["status"]=!powered?"unpowered":!running?"idle":!hasInput?"starved":!hasOutput?"blocked":"running";
+      const powered=definition.requiresPower===false||powerZones.some((zone)=>zone.x<minX+width&&zone.x+zone.size>minX&&zone.y<minY+height&&zone.y+zone.size>minY);
+      const environmentReady=kind!=="gasReactor"||gasZones.some((zone)=>zone.itemId==="acid-gas"&&zone.x<minX+width&&zone.x+zone.size>minX&&zone.y<minY+height&&zone.y+zone.size>minY);
+      const progressTicks=scheduled?Math.max(0,...definition.recipes.map((candidate)=>simulation.processes[`${id}::${candidate.id}`]??0)):simulation.processes[id]??0;
+      const incompatibleInputFull=!scheduled&&!hasInput&&(solidInputTotal>=inputCapacityFor(kind,"belt")||fluidInputTotal>=inputCapacityFor(kind,"pipe"));
+      const status:MachineState["status"]=!powered?"unpowered":!environmentReady?"environment":!running?"idle":deadlockedSlots||incompatibleInputFull||!hasOutput?"blocked":!hasInput?"starved":"running";
       const progress=Math.min(100,Math.round(progressTicks/currentRecipe.durationTicks*100));
-      states[id]={id,kind,recipeId:currentRecipe.id,status,progress,remaining:status==="running"?Math.max(0,(currentRecipe.durationTicks-progressTicks)/SIM_TICKS_PER_SECOND).toFixed(1):"--",hasInput,hasOutput,powered,inventoryFull:solidInputTotal>=inputCapacityFor(kind,"belt")||fluidInputTotal>=inputCapacityFor(kind,"pipe")||outputTotal>=OUTPUT_CAPACITY};
+      states[id]={id,kind,recipeId:currentRecipe.id,status,progress,remaining:status==="running"?Math.max(0,(currentRecipe.durationTicks-progressTicks)/SIM_TICKS_PER_SECOND).toFixed(1):"--",hasInput,hasOutput,powered,inventoryFull:scheduled?(totalInventory(inventory.input)>=bufferSlotsFor(kind)*50||deadlockedSlots):solidInputTotal>=inputCapacityFor(kind,"belt")||fluidInputTotal>=inputCapacityFor(kind,"pipe")||outputTotal>=outputCapacityFor(kind)};
     });
     return states;
-  },[grid,powerZones,simulation.inventories,simulation.processes,running]);
+  },[gasZones,grid,powerZones,simulation.inventories,simulation.processes,running]);
   const flowGraph=useMemo(()=>{
     const visibleKinds=new Set<Kind>([...Object.keys(MACHINE_DEFINITIONS) as ProductionKind[],"depot","storagePort","splitter","merger","pipeSplitter","pipeMerger"]);
     const entities=new Map<string,{kind:Kind;cell:Cell;positions:Point[]}>();
@@ -931,7 +1203,7 @@ export default function Home() {
       const currentRecipe=definition?activeRecipe(definition,entity.cell.recipeId):undefined;
       const tool=tools.find((candidate)=>candidate.kind===entity.kind);
       const status=entity.kind==="depot"?"外部供给":entity.kind==="storagePort"?"仓库存货":definition?"工业设备":"物流节点";
-      return {id,kind:entity.kind,label:definition?.name??tool?.label??"设备",image:definition?.image??tool?.image,detail:currentRecipe?.name??tool?.desc??"",status,sourceX:Math.min(...entity.positions.map((point)=>point.x)),sourceY:Math.min(...entity.positions.map((point)=>point.y)),x:0,y:0};
+      return {id,kind:entity.kind,label:definition?.name??tool?.label??"设备",image:definition&&currentRecipe?machineImageFor(definition,currentRecipe):tool?.image,detail:currentRecipe?.name??tool?.desc??"",status,sourceX:Math.min(...entity.positions.map((point)=>point.x)),sourceY:Math.min(...entity.positions.map((point)=>point.y)),x:0,y:0};
     });
     const visibleIds=new Set(baseNodes.map((node)=>node.id)),edgeKeys=new Set<string>();
     const edges:FlowGraphEdge[]=[];
@@ -987,16 +1259,18 @@ export default function Home() {
   const marqueeBounds=useMemo(()=>marquee?{minX:Math.min(marquee.start.x,marquee.current.x),minY:Math.min(marquee.start.y,marquee.current.y),maxX:Math.max(marquee.start.x,marquee.current.x),maxY:Math.max(marquee.start.y,marquee.current.y)}:null,[marquee]);
   const selectedDepotItem=selectedEntity?.kind==="depot"?INDUSTRIAL_ITEMS.find((item)=>item.id===selectedEntity.itemId):null;
   const showPowerZones=selected==="powerPole"||selectedEntity?.kind==="powerPole";
+  const showGasZones=selected==="gasDisperser"||selectedEntity?.kind==="gasDisperser";
   const entityKinds=useMemo(()=>new Map(Object.values(grid).map((cell)=>[cell.id,cell.kind])),[grid]);
   const inventoryFullIds=useMemo(()=>{
     const ids=new Set<string>();
     Object.entries(simulation.inventories).forEach(([id,inventory])=>{
       const kind=entityKinds.get(id);
       if(isBridge(kind))return;
-      if(inputTotalFor(inventory.input,"belt")>=inputCapacityFor(kind,"belt")||inputTotalFor(inventory.input,"pipe")>=inputCapacityFor(kind,"pipe")||totalInventory(inventory.output)>=OUTPUT_CAPACITY)ids.add(id);
+      if(isSharedBufferMachine(kind)){const state=machineStates[id];if(totalInventory(inventory.input)>=bufferSlotsFor(kind)*50||(occupiedBufferSlots(inventory.input)>=bufferSlotsFor(kind)&&state?.status==="blocked"))ids.add(id);return}
+      if(inputTotalFor(inventory.input,"belt")>=inputCapacityFor(kind,"belt")||inputTotalFor(inventory.input,"pipe")>=inputCapacityFor(kind,"pipe")||totalInventory(inventory.output)>=outputCapacityFor(kind))ids.add(id);
     });
     return ids;
-  },[entityKinds,simulation.inventories]);
+  },[entityKinds,machineStates,simulation.inventories]);
   const transitsByRoute=useMemo(()=>{
     const lanes=new Map<string,TransitItem[]>();
     simulation.transits.forEach((transit)=>{const lane=lanes.get(transit.routeId)??[];lane.push(transit);lanes.set(transit.routeId,lane)});
@@ -1006,28 +1280,17 @@ export default function Home() {
     if(!running||!route.valid)return false;
     const bridgeOutput=bridgeForwardRoutes.get(route.id),outputLane=bridgeOutput?transitsByRoute.get(bridgeOutput.id)??[]:[];
     const bridgeBlocked=Boolean(route.targetPort&&isBridge(route.targetPort.entityKind)&&(!bridgeOutput||(simulation.laneReadyAt[bridgeOutput.id]??0)>simulation.tick||(bridgeOutput.kind==="pipe"?!pipeLaneCanAccept(outputLane,bridgeOutput.cells.length):!beltLaneCanAccept(outputLane,bridgeOutput.cells.length))));
-    const targetBlocked=!route.targetPort||bridgeBlocked||(!isBridge(route.targetPort.entityKind)&&inputTotalFor((simulation.inventories[route.targetPort.entityId]??{input:{},output:{}}).input,route.kind)>=inputCapacityFor(entityKinds.get(route.targetPort.entityId),route.kind));
+    const targetInventory=route.targetPort?(simulation.inventories[route.targetPort.entityId]??{input:{},output:{}}).input:{},targetKind=route.targetPort?entityKinds.get(route.targetPort.entityId):undefined,lane=transitsByRoute.get(route.id)??[],incomingItem=lane.length?lane.reduce((front,candidate)=>candidate.position>front.position?candidate:front).itemId:route.itemId;
+    const targetBlocked=!route.targetPort||bridgeBlocked||(!isBridge(route.targetPort.entityKind)&&Boolean(incomingItem)&&!bufferCanAccept(targetKind,targetInventory,incomingItem!,1));
      return targetBlocked&&(route.kind==="pipe"?pipeLaneIsFull(transitsByRoute.get(route.id)??[],route.cells.length):beltLaneIsFull(transitsByRoute.get(route.id)??[],route.cells.length));
   }).map((route)=>route.id)),[bridgeForwardRoutes,connectedFlowRoutes,entityKinds,running,simulation.inventories,simulation.laneReadyAt,simulation.tick,transitsByRoute]);
   const transportMeta=useMemo(()=>{
     const meta=new Map<string,{kind:TransportKind;name:string;image:string;rate:number;connected:boolean;targetConnected:boolean;travelSeconds:number;cargoCount:number;capacity:number;full:boolean;color?:string}>();
     const observedSeconds=Math.max(5,Math.min(60,simulation.tick/SIM_TICKS_PER_SECOND));
-    connectedFlowRoutes.forEach((route)=>{if(route.direct)return;const lane=transitsByRoute.get(route.id)??[],cargoCount=lane.length,isPipe=route.kind==="pipe",capacity=route.cells.length*(isPipe?PIPE_LANE_PROFILE.unitsPerCell:1),full=isPipe?pipeLaneIsFull(lane,route.cells.length):beltLaneIsFull(lane,route.cells.length),item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===route.itemId),rate=Math.round((simulation.routeTransfers[route.id]?.length??0)*60/observedSeconds);route.cells.forEach(({x,y})=>meta.set(`${route.kind}:${keyOf(x,y)}`,{kind:route.kind,name:route.itemName,image:route.itemImage,rate,connected:route.sourceConnected,targetConnected:route.targetConnected,travelSeconds:isPipe?route.cells.length/(PIPE_LANE_PROFILE.cellsPerTick*SIM_TICKS_PER_SECOND):beltTravelSeconds(route.cells.length),cargoCount,capacity,full,color:item?.color}))});
+    connectedFlowRoutes.forEach((route)=>{if(route.direct)return;const lane=transitsByRoute.get(route.id)??[],cargoCount=lane.length,isPipe=route.kind==="pipe",capacity=route.cells.length*(isPipe?PIPE_LANE_PROFILE.unitsPerCell:1),full=isPipe?pipeLaneIsFull(lane,route.cells.length):beltLaneIsFull(lane,route.cells.length),item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===(lane[0]?.itemId??route.itemId)),rate=Math.round((simulation.routeTransfers[route.id]?.length??0)*60/observedSeconds);route.cells.forEach(({x,y})=>meta.set(`${route.kind}:${keyOf(x,y)}`,{kind:route.kind,name:item?.name??route.itemName,image:item?.image??route.itemImage,rate,connected:route.sourceConnected,targetConnected:route.targetConnected,travelSeconds:isPipe?route.cells.length/(PIPE_LANE_PROFILE.cellsPerTick*SIM_TICKS_PER_SECOND):beltTravelSeconds(route.cells.length),cargoCount,capacity,full,color:item?.color}))});
     return meta;
   },[connectedFlowRoutes,simulation.routeTransfers,simulation.tick,transitsByRoute]);
-  const involvedStatsItems=useMemo(()=>{
-    const itemIds=new Set<string>();
-    const entityIds=new Set<string>();
-    Object.values(grid).forEach((cell)=>{
-      if(entityIds.has(cell.id))return;entityIds.add(cell.id);
-      if(cell.kind==="depot"&&cell.itemId)itemIds.add(cell.itemId);
-      if(cell.kind in MACHINE_DEFINITIONS){const currentRecipe=activeRecipe(MACHINE_DEFINITIONS[cell.kind as ProductionKind],cell.recipeId);currentRecipe.inputs.forEach((input)=>itemIds.add(input.itemId));currentRecipe.outputs.forEach((output)=>itemIds.add(output.itemId))}
-    });
-    connectedFlowRoutes.forEach((route)=>{if(route.itemId)itemIds.add(route.itemId)});
-    Object.values(simulation.inventories).forEach((inventory)=>{Object.keys(inventory.input).forEach((itemId)=>itemIds.add(itemId));Object.keys(inventory.output).forEach((itemId)=>itemIds.add(itemId))});
-    simulation.itemStats.forEach((sample)=>{Object.keys(sample.produced).forEach((itemId)=>itemIds.add(itemId));Object.keys(sample.consumed).forEach((itemId)=>itemIds.add(itemId))});
-    return INDUSTRIAL_ITEMS.filter((item)=>itemIds.has(item.id));
-  },[connectedFlowRoutes,grid,simulation.inventories,simulation.itemStats]);
+  const involvedStatsItems=INDUSTRIAL_ITEMS;
   const statsCharts=useMemo(()=>{
     const charts=new Map<string,ItemStatsChart>(),currentSecond=elapsedSeconds,samples=new Map(simulation.itemStats.map((sample)=>[sample.second,sample]));
     const earliestSecond=currentSecond-(STATS_CHART_POINTS-1)*STATS_SAMPLE_INTERVAL_SECONDS-STATS_SMOOTHING_SECONDS+1;
@@ -1095,13 +1358,25 @@ export default function Home() {
   const selectedModes=selectedDefinition?[...new Set(selectedDefinition.recipes.map((candidate)=>candidate.mode))]:[];
   const selectedInventory=selectedEntityId?simulation.inventories[selectedEntityId]??{input:{},output:{}}:{input:{},output:{}};
   const inventoryMenuVisible=Boolean(selectedEntity&&selectedEntity.kind!=="depot"&&selectedEntity.kind!=="powerPole"&&!isBridge(selectedEntity.kind));
-  const selectedInputItemIds=[...new Set([...(selectedRecipe?.inputs.map((item)=>item.itemId)??[]),...Object.keys(selectedInventory.input)])];
+  const selectedSharedBuffer=Boolean(selectedEntity&&isSharedBufferMachine(selectedEntity.kind));
+  const selectedRelevantRecipes=selectedDefinition?.autoSchedule?selectedDefinition.recipes:selectedRecipe?[selectedRecipe]:[];
+  const selectedInputItemIds=[...new Set([...selectedRelevantRecipes.flatMap((candidate)=>candidate.inputs.map((item)=>item.itemId)),...Object.keys(selectedInventory.input)])];
   const selectedSolidInputItemIds=selectedInputItemIds.filter((itemId)=>itemTransport(itemId)==="belt");
   const selectedFluidInputItemIds=selectedInputItemIds.filter((itemId)=>itemTransport(itemId)==="pipe");
   const selectedSolidInputTotal=inputTotalFor(selectedInventory.input,"belt");
   const selectedFluidInputTotal=inputTotalFor(selectedInventory.input,"pipe");
   const selectedHasFluidInput=Boolean(selectedEntityId&&resolvedPorts.some((port)=>port.entityId===selectedEntityId&&port.type==="input"&&port.transport==="pipe"));
-  const selectedOutputItemIds=[...new Set([...(selectedRecipe?.outputs.map((item)=>item.itemId)??[]),...Object.keys(selectedInventory.output)])];
+  const selectedOutputItemIds=[...new Set([...selectedRelevantRecipes.flatMap((candidate)=>candidate.outputs.map((item)=>item.itemId)),...Object.keys(selectedInventory.output)])];
+  const selectedOutputCapacity=outputCapacityFor(selectedEntity?.kind);
+  const selectedBufferItemIds=[...new Set([...Object.keys(selectedInventory.input),...selectedRelevantRecipes.flatMap((candidate)=>[...candidate.inputs,...candidate.outputs].map((item)=>item.itemId))])];
+  const selectedSolidOutputOptions=selectedBufferItemIds.filter((itemId)=>itemTransport(itemId)==="belt"),selectedPipeOutputOptions=selectedBufferItemIds.filter((itemId)=>itemTransport(itemId)==="pipe");
+  const selectedPipeOutputPorts=selectedEntityId?[...new Map(resolvedPorts.filter((port)=>port.entityId===selectedEntityId&&port.type==="output"&&port.transport==="pipe").map((port)=>[port.outputIndex??port.index,port])).values()].sort((a,b)=>(a.outputIndex??a.index)-(b.outputIndex??b.index)):[];
+  const selectedHasSolidOutput=Boolean(selectedEntityId&&resolvedPorts.some((port)=>port.entityId===selectedEntityId&&port.type==="output"&&port.transport==="belt"));
+  const undergroundCandidates=useMemo(()=>{
+    if(!selectedEntity||!PIPE_TRANSFER_DEVICES.has(selectedEntity.kind))return [];
+    const unique=new Map<string,Cell>();Object.values(grid).forEach((cell)=>{if(!unique.has(cell.id))unique.set(cell.id,cell)});
+    return [...unique.values()].filter((candidate)=>candidate.id!==selectedEntity.id&&undergroundPairCompatible(selectedEntity.kind,candidate.kind));
+  },[grid,selectedEntity]);
   const pickedWidth=pickedEntity?Math.max(...pickedEntity.cells.map((cell)=>cell.dx))+1:pickedGroup?Math.max(...pickedGroup.cells.map((cell)=>cell.dx))+1:0;
   const pickedHeight=pickedEntity?Math.max(...pickedEntity.cells.map((cell)=>cell.dy))+1:pickedGroup?Math.max(...pickedGroup.cells.map((cell)=>cell.dy))+1:0;
   const catalogLayout=catalogDrag?EQUIPMENT_LAYOUTS[catalogDrag]:undefined;
@@ -1192,7 +1467,7 @@ export default function Home() {
     if(!groupTargetsValid(group.cells,x,y,group.mode,group.sourceGridKeys,group.sourcePipeKeys)){setNotice("整组目标位置越界或与现有设施、物流层级冲突");return true}
     const idMap=new Map<string,string>();
     if(group.mode==="copy")group.cells.filter((entry)=>entry.layer==="grid"&&!isTransport(entry.cell.kind)).forEach((entry)=>{if(!idMap.has(entry.cell.id))idMap.set(entry.cell.id,crypto.randomUUID())});
-    const placed=group.cells.map((entry)=>({entry,key:keyOf(x+entry.dx,y+entry.dy),cell:{...entry.cell,id:group.mode==="copy"?(idMap.get(entry.cell.id)??crypto.randomUUID()):entry.cell.id}}));
+    const placed=group.cells.map((entry)=>({entry,key:keyOf(x+entry.dx,y+entry.dy),cell:{...entry.cell,id:group.mode==="copy"?(idMap.get(entry.cell.id)??crypto.randomUUID()):entry.cell.id,pairedEntityId:group.mode==="copy"?undefined:entry.cell.pairedEntityId}}));
     setGrid((old)=>{const next={...old};if(group.mode==="move")group.sourceGridKeys.forEach((key)=>delete next[key]);placed.filter(({entry})=>entry.layer==="grid").forEach(({key,cell})=>{next[key]=cell});return next});
     setPipeGrid((old)=>{const next={...old};if(group.mode==="move")group.sourcePipeKeys.forEach((key)=>delete next[key]);placed.filter(({entry})=>entry.layer==="pipe").forEach(({key,cell})=>{next[key]=cell});return next});
     setSimulation((previous)=>{const inventories={...previous.inventories},processes={...previous.processes};idMap.forEach((nextId)=>{inventories[nextId]={input:{},output:{}};processes[nextId]=0});return {...previous,inventories,processes,transits:[],laneReadyAt:{},routeTransfers:{}}});
@@ -1205,9 +1480,9 @@ export default function Home() {
   function deleteGroupSelection() {
     if(!groupSelection)return;
     const removedIds=new Set(groupSelection.entityIds);
-    setGrid((old)=>{const next={...old};groupSelection.gridKeys.forEach((key)=>delete next[key]);return next});
+    setGrid((old)=>{const next={...old};groupSelection.gridKeys.forEach((key)=>delete next[key]);Object.entries(next).forEach(([key,cell])=>{if(cell.pairedEntityId&&removedIds.has(cell.pairedEntityId))next[key]={...cell,pairedEntityId:undefined}});return next});
     setPipeGrid((old)=>{const next={...old};groupSelection.pipeKeys.forEach((key)=>delete next[key]);return next});
-    setSimulation((previous)=>{const inventories={...previous.inventories},processes={...previous.processes};removedIds.forEach((id)=>{delete inventories[id];delete processes[id]});return {...previous,inventories,processes,transits:[],laneReadyAt:{},routeTransfers:{}}});
+    setSimulation((previous)=>{const inventories={...previous.inventories},processes={...previous.processes},recipeCursor={...previous.recipeCursor};removedIds.forEach((id)=>{delete inventories[id];delete recipeCursor[id];Object.keys(processes).filter((processKey)=>processKey===id||processKey.startsWith(`${id}::`)).forEach((processKey)=>delete processes[processKey])});return {...previous,inventories,processes,recipeCursor,transits:[],laneReadyAt:{},routeTransfers:{}}});
     setGroupSelection(null);setPickedGroup(null);setPlacementPreview(null);setNotice("框选内容已拆除");
   }
 
@@ -1257,7 +1532,7 @@ export default function Home() {
     });
     if (blocked) { setNotice("目标位置超出画布或与现有设施冲突"); return true; }
     const placedId = pickedEntity.mode === "copy" ? crypto.randomUUID() : pickedEntity.id;
-    const write=(old:Grid)=>{const next={...old};if(pickedEntity.mode==="move")pickedEntity.sourceKeys.forEach((key)=>delete next[key]);targets.forEach(({key,item})=>{next[key]={...item.cell,id:placedId}});return next};
+    const write=(old:Grid)=>{const next={...old};if(pickedEntity.mode==="move")pickedEntity.sourceKeys.forEach((key)=>delete next[key]);targets.forEach(({key,item})=>{next[key]={...item.cell,id:placedId,pairedEntityId:pickedEntity.mode==="copy"?undefined:item.cell.pairedEntityId}});return next};
     if(pickedEntity.sourceType==="route"&&routeKind==="pipe")setPipeGrid(write);else setGrid(write);
     if(pickedEntity.sourceType==="entity"){
       if(pickedEntity.mode==="copy")setSimulation((previous)=>({...previous,inventories:{...previous.inventories,[placedId]:{input:{},output:{}}},processes:{...previous.processes,[placedId]:0}}));
@@ -1471,6 +1746,19 @@ export default function Home() {
     setNotice(`仓库取货口已设为 ${item.name} · 有效连接后按 30/min 输出`);
   }
 
+  function setUndergroundPair(entityId:string,targetId:string) {
+    const source=Object.values(grid).find((cell)=>cell.id===entityId),target=targetId?Object.values(grid).find((cell)=>cell.id===targetId):undefined;
+    if(!source||!PIPE_TRANSFER_DEVICES.has(source.kind)||(target&&!undergroundPairCompatible(source.kind,target.kind)))return;
+    const previousSource=source.pairedEntityId,previousTarget=target?.pairedEntityId;
+    setGrid((old)=>Object.fromEntries(Object.entries(old).map(([key,cell])=>{
+      if(cell.id===entityId)return [key,{...cell,pairedEntityId:target?.id}];
+      if(target&&cell.id===target.id)return [key,{...cell,pairedEntityId:entityId}];
+      if(cell.id===previousSource||cell.id===previousTarget||cell.pairedEntityId===entityId||cell.pairedEntityId===target?.id)return [key,{...cell,pairedEntityId:undefined}];
+      return [key,cell];
+    })));
+    setNotice(target?`${tools.find((tool)=>tool.kind===source.kind)?.label}已与${tools.find((tool)=>tool.kind===target.kind)?.label}配对 · 地下按管道带宽直通`:`${tools.find((tool)=>tool.kind===source.kind)?.label}已解除暗管配对`);
+  }
+
   function setMachineRecipe(entityId:string,recipeId:string) {
     const entity=Object.values(grid).find((cell)=>cell.id===entityId);
     if(!entity||!(entity.kind in MACHINE_DEFINITIONS))return;
@@ -1481,33 +1769,48 @@ export default function Home() {
     setNotice(`${definition.name}已切换为${modeLabel(nextRecipe.mode)} · ${nextRecipe.name} · 当前加工周期已清零`);
   }
 
+  function setMachineOutputFilter(entityId:string,key:keyof OutputFilters,itemId:string) {
+    const entity=Object.values(grid).find((cell)=>cell.id===entityId);if(!entity||!isSharedBufferMachine(entity.kind))return;
+    const item=itemId?INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===itemId):undefined;
+    setGrid((old)=>Object.fromEntries(Object.entries(old).map(([cellKey,cell])=>[cellKey,cell.id===entityId?{...cell,outputFilters:{...cell.outputFilters,[key]:itemId||undefined}}:cell])));
+    setNotice(`${tools.find((tool)=>tool.kind===entity.kind)?.label} · ${key==="solid"?"物品输出":key==="pipe0"?"管道输出 1":"管道输出 2"}已设为 ${item?.name??"关闭"}`);
+  }
+
+  function setExpandedReactorAutoUnblock(entityId:string,enabled:boolean) {
+    const entity=Object.values(grid).find((cell)=>cell.id===entityId);
+    if(entity?.kind!=="expandedReactor")return;
+    setGrid((old)=>Object.fromEntries(Object.entries(old).map(([cellKey,cell])=>[cellKey,cell.id===entityId?{...cell,autoMultiRecipeUnblock:enabled}:cell])));
+    setNotice(`扩容反应池 · 自动处理多配方阻塞${enabled?"已开启":"已关闭"}（占位设置，处理规则待补充）`);
+  }
+
   function addInventory(entityId:string,side:"input"|"output",itemId:string,amount:number) {
     const item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===itemId);
     if(!item||!Number.isFinite(amount)||amount<=0)return;
     if(side==="input"&&!resolvedPorts.some((port)=>port.entityId===entityId&&port.type==="input"&&port.transport===itemTransport(itemId))){setNotice(`${tools.find((tool)=>tool.kind===entityKinds.get(entityId))?.label??"该设备"}没有匹配的${itemTransport(itemId)==="pipe"?"液体":"固体"}输入口`);return}
-    const kind=entityKinds.get(entityId),capacity=side==="input"?inputCapacityFor(kind,itemTransport(itemId)):OUTPUT_CAPACITY;
+    const kind=entityKinds.get(entityId),sharedBuffer=isSharedBufferMachine(kind),capacity=side==="input"?inputCapacityFor(kind,itemTransport(itemId)):outputCapacityFor(kind);
+    if(sharedBuffer&&side==="output"){setNotice("反应池没有独立产出库存 · 请放入内部暂存槽");return}
     setSimulation((previous)=>{
       const current=previous.inventories[entityId]??{input:{},output:{}};
-      const bucket={...current[side]},space=Math.max(0,capacity-(side==="input"?inputTotalFor(bucket,itemTransport(itemId)):totalInventory(bucket)));
+      const bucket={...current[side]},space=sharedBuffer?((bucket[itemId]??0)>0||occupiedBufferSlots(bucket)<bufferSlotsFor(kind)?Math.max(0,50-(bucket[itemId]??0)):0):Math.max(0,capacity-(side==="input"?inputTotalFor(bucket,itemTransport(itemId)):totalInventory(bucket)));
       const inserted=Math.min(Math.floor(amount),space);
       bucket[itemId]=(bucket[itemId]??0)+inserted;
       return {...previous,inventories:{...previous.inventories,[entityId]:{...current,[side]:bucket}}};
     });
-    if(side==="input"&&(simulation.processes[entityId]??0)===0){
+    if(side==="input"&&!sharedBuffer&&(simulation.processes[entityId]??0)===0){
       const entity=Object.values(grid).find((cell)=>cell.id===entityId&&cell.kind in MACHINE_DEFINITIONS),current=simulation.inventories[entityId]?.input??{};
       if(entity){const space=Math.max(0,capacity-inputTotalFor(current,itemTransport(itemId))),projected={...current,[itemId]:(current[itemId]??0)+Math.min(Math.floor(amount),space)},definition=MACHINE_DEFINITIONS[entity.kind as ProductionKind],nextRecipe=automaticRecipe(definition,entity.recipeId,projected);setGrid((old)=>Object.fromEntries(Object.entries(old).map(([key,cell])=>[key,cell.id===entityId?{...cell,recipeId:nextRecipe.id}:cell])))}
     }
-    setNotice(`${item.name}已放入${side==="input"?"输入":"产出"}库存 · 超出容量的数量不会写入`);
+    setNotice(`${item.name}已放入${sharedBuffer?"内部暂存槽":side==="input"?"输入":"产出"} · 超出容量或槽位上限的数量不会写入`);
   }
 
   function deleteAt(x:number,y:number,preferredKind?:TransportKind) {
     const key=keyOf(x,y),target=preferredKind==="pipe"?pipeGrid[key]:preferredKind==="belt"?grid[key]:grid[key]??pipeGrid[key];if(!target)return;
     const route=isTransport(target.kind)?flowRoutes.find((candidate)=>candidate.kind===target.kind&&candidate.cells.some((point)=>point.x===x&&point.y===y)):undefined;
     const keys=route?route.cells.map((point)=>keyOf(point.x,point.y)):isTransport(target.kind)?[keyOf(x,y)]:Object.entries(grid).filter(([,cell])=>cell.id===target.id).map(([key])=>key);
-    const remove=(old:Grid)=>{const next={...old};keys.forEach((key)=>delete next[key]);return next};
+    const remove=(old:Grid)=>{const next={...old};keys.forEach((key)=>delete next[key]);Object.entries(next).forEach(([cellKey,cell])=>{if(cell.pairedEntityId===target.id)next[cellKey]={...cell,pairedEntityId:undefined}});return next};
     if(target.kind==="pipe")setPipeGrid(remove);else setGrid(remove);
     if(route)setSimulation((previous)=>{const laneReadyAt={...previous.laneReadyAt},routeTransfers={...previous.routeTransfers};delete laneReadyAt[route.id];delete routeTransfers[route.id];return {...previous,transits:previous.transits.filter((transit)=>transit.routeId!==route.id),laneReadyAt,routeTransfers}});
-    else if(!isTransport(target.kind))setSimulation((previous)=>{const inventories={...previous.inventories},processes={...previous.processes},laneReadyAt={...previous.laneReadyAt},routeTransfers={...previous.routeTransfers};delete inventories[target.id];delete processes[target.id];const affected=new Set(connectedFlowRoutes.filter((candidate)=>candidate.sourcePort?.entityId===target.id||candidate.targetPort?.entityId===target.id).map((candidate)=>candidate.id));affected.forEach((routeId)=>{delete laneReadyAt[routeId];delete routeTransfers[routeId]});return {...previous,inventories,processes,laneReadyAt,routeTransfers,transits:previous.transits.filter((transit)=>!affected.has(transit.routeId))}});
+    else if(!isTransport(target.kind))setSimulation((previous)=>{const inventories={...previous.inventories},processes={...previous.processes},recipeCursor={...previous.recipeCursor},laneReadyAt={...previous.laneReadyAt},routeTransfers={...previous.routeTransfers};delete inventories[target.id];delete recipeCursor[target.id];Object.keys(processes).filter((processKey)=>processKey===target.id||processKey.startsWith(`${target.id}::`)).forEach((processKey)=>delete processes[processKey]);Object.keys(laneReadyAt).filter((laneKey)=>laneKey.includes(target.id)).forEach((laneKey)=>delete laneReadyAt[laneKey]);const affected=new Set(connectedFlowRoutes.filter((candidate)=>candidate.sourcePort?.entityId===target.id||candidate.targetPort?.entityId===target.id).map((candidate)=>candidate.id));affected.forEach((routeId)=>{delete laneReadyAt[routeId];delete routeTransfers[routeId]});return {...previous,inventories,processes,recipeCursor,laneReadyAt,routeTransfers,transits:previous.transits.filter((transit)=>!affected.has(transit.routeId))}});
     setSelectedEntityId(null);setSelectedTransportKey(null);setPickedEntity(null);setPlacementPreview(null);setNotice(isTransport(target.kind)?`整条${target.kind==="pipe"?"管道":"传送带"}线路已拆除`:"设备及其独立库存已拆除");
   }
 
@@ -1546,8 +1849,8 @@ export default function Home() {
     if(cells.some((key)=>!catalogCellValid(kind,key,grid,pipeGrid))){setNotice("设备占地与现有设施或物流层级冲突");return}
     const transport=logisticsTransport(kind),underlying=transport==="pipe"?pipeGrid[cells[0]]:transport==="belt"?grid[cells[0]]:undefined;
     const rotation=straightDirection(underlying)??0,id=crypto.randomUUID(),rootIndex=Math.floor(height/2)*width+Math.floor(width/2);
-    const recipeId=kind in MACHINE_DEFINITIONS?MACHINE_DEFINITIONS[kind as ProductionKind].recipes[0].id:undefined;
-    setGrid((old)=>{const next={...old};cells.forEach((key,index)=>next[key]={kind,rotation,id,root:index===rootIndex,partX:index%width,partY:Math.floor(index/width),size:Math.max(width,height),width,height,recipeId});return next});
+    const definition=kind in MACHINE_DEFINITIONS?MACHINE_DEFINITIONS[kind as ProductionKind]:undefined,recipeId=definition?.recipes[0].id,outputFilters=definition?.autoSchedule?defaultOutputFilters(definition):undefined;
+    setGrid((old)=>{const next={...old};cells.forEach((key,index)=>next[key]={kind,rotation,id,root:index===rootIndex,partX:index%width,partY:Math.floor(index/width),size:Math.max(width,height),width,height,recipeId,outputFilters});return next});
     if(transport==="pipe")setPipeGrid((old)=>{const next={...old};cells.forEach((key)=>delete next[key]);return next});
     if(transport&&underlying)setSimulation((previous)=>({...previous,transits:[],laneReadyAt:{},routeTransfers:{}}));
     setSelected("belt");setSelectionMode(true);setMarqueeMode(false);setGroupSelection(null);setSelectedEntityId(id);setSelectedTransportKey(null);
@@ -1559,7 +1862,7 @@ export default function Home() {
     event.preventDefault();
     if(beltBuildMode)finishBeltBuild();
     try{event.currentTarget.setPointerCapture(event.pointerId)}catch{}
-    catalogDragKindRef.current=kind;setCatalogDrag(kind);setSelected(kind);setCatalogPreview(null);setSelectionMode(false);setMarqueeMode(false);setGroupSelection(null);setPickedEntity(null);setPickedGroup(null);setPlacementPreview(null);
+    catalogDragKindRef.current=kind;catalogPointerRef.current={pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,dragged:false};setCatalogDrag(kind);setSelected(kind);setCatalogPreview(null);setSelectionMode(false);setMarqueeMode(false);setGroupSelection(null);setPickedEntity(null);setPickedGroup(null);setPlacementPreview(null);
     setNotice(`${tools.find((tool)=>tool.kind===kind)?.label??"设备"} · 拖到画布网格放置`);
   }
 
@@ -1567,13 +1870,15 @@ export default function Home() {
     const gridElement=gridRef.current;if(!gridElement)return null;
     const layout=EQUIPMENT_LAYOUTS[kind],width=layout?.width??(kind==="powerPole"?2:1),height=layout?.height??(kind==="powerPole"?2:1);
     const rect=gridElement.getBoundingClientRect();if(clientX<rect.left||clientY<rect.top||clientX>rect.right||clientY>rect.bottom)return null;
+    const hit=document.elementFromPoint(clientX,clientY);if(!hit||!gridElement.contains(hit))return null;
     const x=Math.max(0,Math.min(cols-width,Math.floor((clientX-rect.left)/rect.width*cols))),y=Math.max(0,Math.min(rows-height,Math.floor((clientY-rect.top)/rect.height*rows)));
     const valid=Array.from({length:width*height},(_,index)=>keyOf(x+index%width,y+Math.floor(index/width))).every((key)=>catalogCellValid(kind,key,grid,pipeGrid));
     return{x,y,valid};
   }
 
   function updateCatalogPointer(event:React.PointerEvent<HTMLButtonElement>) {
-    const kind=catalogDragKindRef.current;if(!kind)return;
+    const kind=catalogDragKindRef.current,gesture=catalogPointerRef.current;if(!kind||!gesture)return;
+    if(!gesture.dragged&&Math.hypot(event.clientX-gesture.startX,event.clientY-gesture.startY)<6)return;gesture.dragged=true;
     const point=catalogPointAt(event.clientX,event.clientY,kind);if(!point){setCatalogPreview(null);return}const{x,y}=point;setCatalogPreview((current)=>current?.x===x&&current?.y===y?current:{x,y});
   }
 
@@ -1581,14 +1886,14 @@ export default function Home() {
     const kind=catalogDragKindRef.current;if(!kind)return;
     event.preventDefault();event.stopPropagation();
     try{if(event.currentTarget.hasPointerCapture(event.pointerId))event.currentTarget.releasePointerCapture(event.pointerId)}catch{}
-    const point=catalogPointAt(event.clientX,event.clientY,kind);
-    catalogDragKindRef.current=null;setCatalogDrag(null);setCatalogPreview(null);
-    if(point?.valid)placeTool(point.x,point.y,kind);else{setSelected("belt");setNotice(point?"目标占地与现有设备或物流线路冲突":"拖动已取消 · 请在画布网格内释放")}
+    const gesture=catalogPointerRef.current,point=gesture?.dragged?catalogPointAt(event.clientX,event.clientY,kind):null;
+    catalogDragKindRef.current=null;catalogPointerRef.current=null;setCatalogDrag(null);setCatalogPreview(null);
+    if(point?.valid)placeTool(point.x,point.y,kind);else{setSelected("belt");setNotice(gesture?.dragged?(point?"目标占地与现有设备或物流线路冲突":"拖动已取消 · 请在可见画布网格内释放"):"设备仅支持拖动添加")}
   }
 
   function cancelCatalogPointer() {
     if(catalogDragKindRef.current===null)return;
-    catalogDragKindRef.current=null;setCatalogDrag(null);setCatalogPreview(null);setSelected("belt");
+    catalogDragKindRef.current=null;catalogPointerRef.current=null;setCatalogDrag(null);setCatalogPreview(null);setSelected("belt");
   }
 
   function save() {
@@ -1604,7 +1909,7 @@ export default function Home() {
 
   function clearCanvas() {
     if(!window.confirm("清空画布会移除所有设备、传送带、管道和当前模拟数据。已保存的本机蓝图不会被删除。是否继续？"))return;
-    cancelRadialMenu();catalogDragKindRef.current=null;
+    cancelRadialMenu();catalogDragKindRef.current=null;catalogPointerRef.current=null;
     setRunning(false);setGrid({});setPipeGrid({});setSimulation(emptySimulationState());
     setSelected("belt");setSelectionMode(false);setMarqueeMode(false);setMarquee(null);setGroupSelection(null);setPickedEntity(null);setPickedGroup(null);setPlacementPreview(null);
     setSelectedEntityId(null);setSelectedTransportKey(null);setBeltBuildMode(null);setBeltDraft(null);setBeltPreviewPoint(null);setHoveredEntity(null);setCatalogDrag(null);setCatalogPreview(null);
@@ -1615,7 +1920,7 @@ export default function Home() {
     const saved = localStorage.getItem("endfield-blueprint-v3")??localStorage.getItem("endfield-blueprint-v2")??localStorage.getItem("endfield-blueprint-v1");
     if (saved) {
       const parsed=JSON.parse(saved);
-      if(parsed.grid){const savedSimulation=parsed.simulation??{};setGrid(parsed.grid);setPipeGrid(parsed.pipeGrid??{});setSimulation({tick:savedSimulation.tick??0,inventories:savedSimulation.inventories??{},processes:savedSimulation.processes??{},transits:[],routeCursor:savedSimulation.routeCursor??{},laneReadyAt:{},routeTransfers:savedSimulation.routeTransfers??{},itemStats:savedSimulation.itemStats??[]})}else setGrid(parsed);
+      if(parsed.grid){const savedSimulation=parsed.simulation??{};setGrid(parsed.grid);setPipeGrid(parsed.pipeGrid??{});setSimulation({tick:savedSimulation.tick??0,inventories:savedSimulation.inventories??{},processes:savedSimulation.processes??{},transits:[],routeCursor:savedSimulation.routeCursor??{},recipeCursor:savedSimulation.recipeCursor??{},laneReadyAt:{},routeTransfers:savedSimulation.routeTransfers??{},itemStats:savedSimulation.itemStats??[]})}else setGrid(parsed);
     }
     setNotice(saved ? "已恢复本机蓝图" : "没有找到已保存蓝图");
   }
@@ -1686,24 +1991,37 @@ export default function Home() {
             {beltBuildMode&&<div className="belt-build-toolbar"><span><kbd>{beltBuildMode==="pipe"?"Q":"E"}</kbd> {beltBuildMode==="pipe"?"管道":"传送带"}模式</span><strong>{beltDraft?`${beltDraft.waypoints.length} 个路径点`:"点击创建起点"}</strong><small>{beltDraft?"移动鼠标实时预览自动寻路":"可从空格或匹配类型的设备输出口开始"}</small><span><kbd>Esc / {beltBuildMode==="pipe"?"Q":"E"}</kbd> 完成　<kbd>右键</kbd> 取消</span></div>}
             {inventoryMenuVisible&&selectedEntityId&&selectedEntity&&<aside className="device-menu" role="dialog" aria-label={`${tools.find((tool)=>tool.kind===selectedEntity.kind)?.label??"设备"}库存`}>
               <header><div><small>DEVICE BUFFER</small><strong>{selectedDefinition?.name??tools.find((tool)=>tool.kind===selectedEntity.kind)?.label}</strong></div><button aria-label="关闭设备库存" onClick={()=>setSelectedEntityId(null)}>×</button></header>
+              {PIPE_TRANSFER_DEVICES.has(selectedEntity.kind)&&<section className="underground-link"><div className="recipe-heading"><strong>地下暗管配对</strong><span>{selectedEntity.pairedEntityId?"已连接":"未连接"}</span></div><label><span>配对设备</span><select aria-label="暗管配对设备" value={selectedEntity.pairedEntityId??""} onChange={(event)=>setUndergroundPair(selectedEntityId,event.target.value)}><option value="">不配对</option>{undergroundCandidates.map((candidate,index)=><option key={candidate.id} value={candidate.id}>{tools.find((tool)=>tool.kind===candidate.kind)?.label} #{String(index+1).padStart(2,"0")}</option>)}</select></label><small>同规格入口与出口一对一连接；配对独立保存，不依赖画布上的可见管线路径。</small></section>}
               {selectedDefinition&&selectedRecipe&&<>
-                <section className="recipe-control"><div className="recipe-heading"><strong>工作模式与配方</strong><span>{selectedDefinition.powerUsage} 电力</span></div>{selectedModes.length>1&&<div className="mode-switch" role="group" aria-label="设备工作模式">{selectedModes.map((mode)=><button key={mode} className={selectedRecipe.mode===mode?"active":""} onClick={()=>setMachineRecipe(selectedEntityId,selectedDefinition.recipes.find((candidate)=>candidate.mode===mode)!.id)}>{modeLabel(mode)}</button>)}</div>}<label><span>当前配方</span><select aria-label="当前处理配方" value={selectedRecipe.id} onChange={(event)=>setMachineRecipe(selectedEntityId,event.target.value)}>{selectedDefinition.recipes.filter((candidate)=>candidate.mode===selectedRecipe.mode).map((candidate)=><option key={candidate.id} value={candidate.id}>{candidate.name} · {candidate.durationTicks/SIM_TICKS_PER_SECOND}s</option>)}</select></label><small className="recipe-rate">额定流量 · {recipeRateText(selectedRecipe)}</small><small>切换模式或配方会清零当前加工周期，输入与产出库存保持不变。</small></section>
-                <div className="device-process"><span>{recipeText(selectedRecipe)}</span><i><b style={{width:`${machineStates[selectedEntityId]?.progress??0}%`}}/></i><small>{machineStates[selectedEntityId]?.status==="running"?`处理中 · 剩余 ${machineStates[selectedEntityId]?.remaining}s`:machineStates[selectedEntityId]?.status==="blocked"?"产出库存已满 · 已阻塞":"等待处理条件"}</small></div>
+                {selectedDefinition.autoSchedule?<section className="recipe-control parallel-recipes"><div className="recipe-heading"><strong>{selectedDefinition.bufferSlots} 个内部暂存槽</strong><span>每槽 50 · {selectedDefinition.powerUsage} 电力</span></div><div className="parallel-recipe-list">{selectedDefinition.recipes.map((candidate)=>{const ticks=simulation.processes[`${selectedEntityId}::${candidate.id}`]??0,ready=candidate.inputs.every((requirement)=>(selectedInventory.input[requirement.itemId]??0)>=requirement.amount)&&Boolean(bufferAfterRecipe(selectedEntity.kind,selectedInventory.input,candidate));return <div key={candidate.id} className={ticks>0?"active":ready?"ready":""}><span><b>{candidate.name}</b><small>{ticks>0?"处理中 · 配方锁定":ready?"可运行":"等待暂存物"}</small></span><i><b style={{width:`${Math.min(100,ticks/candidate.durationTicks*100)}%`}}/></i></div>})}</div><small>{selectedDefinition.autoSchedule==="parallel"?"所有能跑通的配方同时处理；同一配方完成前不会重复启动。":"所有能跑通的配方轮流处理；当前配方完成前不会切换。"} 产物返回同一组暂存槽。</small>{selectedEntity.kind==="expandedReactor"&&<label className="placeholder-switch"><span><b>自动处理多配方阻塞</b><small>占位设置 · 具体处理规则待补充</small></span><input aria-label="自动处理多配方阻塞" type="checkbox" checked={Boolean(selectedEntity.autoMultiRecipeUnblock)} onChange={(event)=>setExpandedReactorAutoUnblock(selectedEntityId,event.target.checked)}/><i aria-hidden="true"/></label>}</section>:<section className="recipe-control"><div className="recipe-heading"><strong>工作模式与配方</strong><span>{selectedDefinition.powerUsage} 电力</span></div>{selectedModes.length>1&&<div className="mode-switch" role="group" aria-label="设备工作模式">{selectedModes.map((mode)=><button key={mode} className={selectedRecipe.mode===mode?"active":""} onClick={()=>setMachineRecipe(selectedEntityId,selectedDefinition.recipes.find((candidate)=>candidate.mode===mode)!.id)}>{modeLabel(mode)}</button>)}</div>}<label><span>当前配方</span><select aria-label="当前处理配方" value={selectedRecipe.id} onChange={(event)=>setMachineRecipe(selectedEntityId,event.target.value)}>{selectedDefinition.recipes.filter((candidate)=>candidate.mode===selectedRecipe.mode).map((candidate)=><option key={candidate.id} value={candidate.id}>{candidate.name} · {candidate.durationTicks/SIM_TICKS_PER_SECOND}s</option>)}</select></label><small className="recipe-rate">额定流量 · {recipeRateText(selectedRecipe)}</small><small>设备会根据输入库存自动匹配配方；手动切换会清零当前加工周期。</small></section>}
+                <div className="device-process"><span>{selectedSharedBuffer?"自动检查全部暂存槽配方":recipeText(selectedRecipe)}</span><i><b style={{width:`${machineStates[selectedEntityId]?.progress??0}%`}}/></i><small>{machineStates[selectedEntityId]?.status==="running"?`处理中 · 剩余 ${machineStates[selectedEntityId]?.remaining}s`:machineStates[selectedEntityId]?.status==="blocked"?(selectedSharedBuffer?"暂存槽无法继续处理 · 已阻塞":"产出库存已满 · 已阻塞"):machineStates[selectedEntityId]?.status==="environment"?"缺少酸性气体环境":"等待处理条件"}</small></div>
               </>}
-              <section className="inventory-section solid"><div className="inventory-heading"><strong>固体输入库存</strong><span>{selectedSolidInputTotal} / {inputCapacityFor(selectedEntity.kind,"belt")}</span></div>
-                <div className="inventory-meter"><i style={{width:`${Math.min(100,selectedSolidInputTotal/inputCapacityFor(selectedEntity.kind,"belt")*100)}%`}}/></div>
-                <div className="inventory-list">{selectedSolidInputItemIds.length?selectedSolidInputItemIds.map((itemId)=>{const item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===itemId);return <div key={itemId}><span>{item&&<AssetThumb src={item.image} label={item.name}/>} {item?.name??itemId}</span><b>{selectedInventory.input[itemId]??0}</b></div>}):<small>暂无固体物品</small>}</div>
-              </section>
-              {selectedHasFluidInput&&<section className="inventory-section fluid"><div className="inventory-heading"><strong>液体输入库存</strong><span>{selectedFluidInputTotal} / {inputCapacityFor(selectedEntity.kind,"pipe")}</span></div>
-                <div className="inventory-meter fluid"><i style={{width:`${Math.min(100,selectedFluidInputTotal/inputCapacityFor(selectedEntity.kind,"pipe")*100)}%`}}/></div>
-                <div className="inventory-list">{selectedFluidInputItemIds.length?selectedFluidInputItemIds.map((itemId)=>{const item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===itemId);return <div key={itemId}><span>{item&&<AssetThumb src={item.image} label={item.name}/>} {item?.name??itemId}</span><b>{selectedInventory.input[itemId]??0}</b></div>}):<small>暂无液体</small>}</div>
-              </section>}
-              <section><div className="inventory-heading"><strong>产出库存</strong><span>{totalInventory(selectedInventory.output)} / {OUTPUT_CAPACITY}</span></div>
-                <div className="inventory-meter output"><i style={{width:`${Math.min(100,totalInventory(selectedInventory.output)/OUTPUT_CAPACITY*100)}%`}}/></div>
-                <div className="inventory-list">{selectedOutputItemIds.length?selectedOutputItemIds.map((itemId)=>{const item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===itemId);return <div key={itemId}><span>{item&&<AssetThumb src={item.image} label={item.name}/>} {item?.name??itemId}</span><b>{selectedInventory.output[itemId]??0}</b></div>}):<small>暂无物品</small>}</div>
-              </section>
-              <section className="inventory-inject"><strong>直接放入库存</strong><select aria-label="库存物品" value={inventoryItemId} onChange={(event)=>setInventoryItemId(event.target.value)}>{INDUSTRIAL_ITEMS.map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</select><input aria-label="放入数量" type="number" min="1" max="60" value={inventoryAmount} onChange={(event)=>setInventoryAmount(Math.max(1,Number(event.target.value)))}/><div><button onClick={()=>addInventory(selectedEntityId,"input",inventoryItemId,inventoryAmount)}>放入输入库存</button><button onClick={()=>addInventory(selectedEntityId,"output",inventoryItemId,inventoryAmount)}>放入产出库存</button></div></section>
-              <footer>{inventoryFullIds.has(selectedEntityId)?"对应介质库存已满 · 相连物流暂停，设备边框标红":"固体与液体输入分别计容 · 产物按输出线路轮询分配"}</footer>
+              {selectedSharedBuffer?<>
+                <section className="inventory-section shared-buffer"><div className="inventory-heading"><strong>内部暂存槽</strong><span>{occupiedBufferSlots(selectedInventory.input)} / {bufferSlotsFor(selectedEntity.kind)} 槽 · 每槽 50</span></div>
+                  <div className="inventory-meter"><i style={{width:`${Math.min(100,totalInventory(selectedInventory.input)/(bufferSlotsFor(selectedEntity.kind)*50)*100)}%`}}/></div>
+                  <div className="buffer-slot-list">{Array.from({length:bufferSlotsFor(selectedEntity.kind)},(_,index)=>{const entry=Object.entries(selectedInventory.input).filter(([,quantity])=>quantity>0)[index],item=entry?INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===entry[0]):undefined;return <div key={index} className={entry?"occupied":"empty"}><em>{String(index+1).padStart(2,"0")}</em>{entry?<><span>{item&&<AssetThumb src={item.image} label={item.name}/>}<b>{item?.name??entry[0]}</b></span><strong>{entry[1]} / 50</strong></>:<small>空槽</small>}</div>})}</div>
+                </section>
+                <section className="output-routing"><div className="inventory-heading"><strong>暂存槽输出选择</strong><span>独立于配方</span></div>
+                  {selectedHasSolidOutput&&<label><span>物品输出 · 全部传送带口</span><select aria-label="反应池物品输出" value={(selectedEntity.outputFilters??defaultOutputFilters(selectedDefinition)).solid??""} onChange={(event)=>setMachineOutputFilter(selectedEntityId,"solid",event.target.value)}><option value="">关闭输出</option>{selectedSolidOutputOptions.map((itemId)=><option key={itemId} value={itemId}>{itemName(itemId)}</option>)}</select></label>}
+                  {selectedPipeOutputPorts.map((port,index)=>{const key=outputFilterKey(port,"pipe"),value=(selectedEntity.outputFilters??defaultOutputFilters(selectedDefinition))[key]??"";return <label key={port.key}><span>管道输出 {index+1}</span><select aria-label={`反应池管道输出 ${index+1}`} value={value} onChange={(event)=>setMachineOutputFilter(selectedEntityId,key,event.target.value)}><option value="">关闭输出</option>{selectedPipeOutputOptions.map((itemId)=><option key={itemId} value={itemId}>{itemName(itemId)}</option>)}</select></label>})}
+                  <small>物品输出只能选择一种；两个管道输出可分别选择不同介质。只会取出暂存槽中实际存在的内容。</small>
+                </section>
+              </>:<>
+                <section className="inventory-section solid"><div className="inventory-heading"><strong>固体输入库存</strong><span>{selectedSolidInputTotal} / {inputCapacityFor(selectedEntity.kind,"belt")}</span></div>
+                  <div className="inventory-meter"><i style={{width:`${Math.min(100,selectedSolidInputTotal/inputCapacityFor(selectedEntity.kind,"belt")*100)}%`}}/></div>
+                  <div className="inventory-list">{selectedSolidInputItemIds.length?selectedSolidInputItemIds.map((itemId)=>{const item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===itemId);return <div key={itemId}><span>{item&&<AssetThumb src={item.image} label={item.name}/>} {item?.name??itemId}</span><b>{selectedInventory.input[itemId]??0}</b></div>}):<small>暂无固体物品</small>}</div>
+                </section>
+                {selectedHasFluidInput&&<section className="inventory-section fluid"><div className="inventory-heading"><strong>管道介质输入库存</strong><span>{selectedFluidInputTotal} / {inputCapacityFor(selectedEntity.kind,"pipe")}</span></div>
+                  <div className="inventory-meter fluid"><i style={{width:`${Math.min(100,selectedFluidInputTotal/inputCapacityFor(selectedEntity.kind,"pipe")*100)}%`}}/></div>
+                  <div className="inventory-list">{selectedFluidInputItemIds.length?selectedFluidInputItemIds.map((itemId)=>{const item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===itemId);return <div key={itemId}><span>{item&&<AssetThumb src={item.image} label={item.name}/>} {item?.name??itemId}</span><b>{selectedInventory.input[itemId]??0}</b></div>}):<small>暂无管道介质</small>}</div>
+                </section>}
+                <section><div className="inventory-heading"><strong>产出库存</strong><span>{totalInventory(selectedInventory.output)} / {selectedOutputCapacity}</span></div>
+                  <div className="inventory-meter output"><i style={{width:`${Math.min(100,totalInventory(selectedInventory.output)/selectedOutputCapacity*100)}%`}}/></div>
+                  <div className="inventory-list">{selectedOutputItemIds.length?selectedOutputItemIds.map((itemId)=>{const item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===itemId);return <div key={itemId}><span>{item&&<AssetThumb src={item.image} label={item.name}/>} {item?.name??itemId}</span><b>{selectedInventory.output[itemId]??0}</b></div>}):<small>暂无物品</small>}</div>
+                </section>
+              </>}
+              <section className="inventory-inject"><strong>{selectedSharedBuffer?"直接放入内部暂存槽":"直接放入库存"}</strong><select aria-label="库存物品" value={inventoryItemId} onChange={(event)=>setInventoryItemId(event.target.value)}>{INDUSTRIAL_ITEMS.map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</select><input aria-label="放入数量" type="number" min="1" max="60" value={inventoryAmount} onChange={(event)=>setInventoryAmount(Math.max(1,Number(event.target.value)))}/><div><button onClick={()=>addInventory(selectedEntityId,"input",inventoryItemId,inventoryAmount)}>{selectedSharedBuffer?"放入暂存槽":"放入输入库存"}</button>{!selectedSharedBuffer&&<button onClick={()=>addInventory(selectedEntityId,"output",inventoryItemId,inventoryAmount)}>放入产出库存</button>}</div></section>
+              <footer>{inventoryFullIds.has(selectedEntityId)?"库存或暂存槽已阻塞 · 相连物流暂停，设备边框标红":selectedSharedBuffer?"所有物品共用暂存槽 · 错误物品同样占用槽位":"固体与管道介质输入分别计容 · 任何物品均可进入并真实占用库存"}</footer>
             </aside>}
             <div className="axis axis-y">12<br/>08<br/>04<br/>00</div>
             <div ref={gridRef} className={`grid ${panning ? "is-panning" : ""} ${pickedEntity||pickedGroup?"is-placing":""} ${marqueeMode?"marquee-mode":""} ${running ? "simulation-running" : ""}`} style={{ gridTemplateColumns: `repeat(${cols}, 1fr)`, aspectRatio:`${cols}/${rows}`, transform:`translate(${pan.x}px,${pan.y}px) scale(${zoom})` }}
@@ -1719,8 +2037,10 @@ export default function Home() {
                 {powerZones.map((zone)=><rect key={zone.id} x={zone.x} y={zone.y} width={zone.size} height={zone.size} rx=".16"/>)}
               </svg>}
               {showPowerZones&&powerZones.map((zone)=><span key={zone.id} className="power-range-label" style={{left:`${Math.max(0,zone.x)/cols*100}%`,top:`${Math.max(0,zone.y)/rows*100}%`}}>供电范围 12×12 · 规划参考</span>)}
+              {showGasZones&&<svg className="gas-zone-overlay" viewBox={`0 0 ${cols} ${rows}`} preserveAspectRatio="none" aria-hidden="true">{gasZones.map((zone)=>{const item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===zone.itemId);return <rect key={zone.id} x={zone.x} y={zone.y} width={zone.size} height={zone.size} rx=".16" style={{"--gas-zone-color":item?.color??"#bdd8cc"} as React.CSSProperties}/>})}</svg>}
+              {showGasZones&&gasZones.map((zone)=><span key={zone.id} className="gas-range-label" style={{left:`${Math.max(0,zone.x)/cols*100}%`,top:`${Math.max(0,zone.y)/rows*100}%`}}>气体环境 14×14 · {itemName(zone.itemId??"")||"等待介质"}</span>)}
               <svg className="transport-overlay" viewBox={`0 0 ${cols} ${rows}`} preserveAspectRatio="none" aria-hidden="true">
-                {displayFlowRoutes.map((route)=>{const connected=connectedFlowRoutes.find((candidate)=>candidate.id===route.id),item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===connected?.itemId),pipeTransits=route.kind==="pipe"?(transitsByRoute.get(route.id)??[]):[];return <g key={route.id} className={`route-track ${route.kind} ${selectedRoute?.id===route.id?"selected-route":""} ${pickedEntity?.sourceType==="route"&&pickedEntity.mode==="move"&&pickedEntity.id===route.id?"picked-route":""}`} style={route.kind==="pipe"?{"--pipe-fluid":item?.color??"transparent"} as React.CSSProperties:undefined} data-content={connected?.itemId}>
+                {displayFlowRoutes.map((route)=>{const connected=connectedFlowRoutes.find((candidate)=>candidate.id===route.id),pipeTransits=route.kind==="pipe"?(transitsByRoute.get(route.id)??[]):[],item=INDUSTRIAL_ITEMS.find((candidate)=>candidate.id===(pipeTransits[0]?.itemId??connected?.itemId));return <g key={route.id} className={`route-track ${route.kind} ${selectedRoute?.id===route.id?"selected-route":""} ${pickedEntity?.sourceType==="route"&&pickedEntity.mode==="move"&&pickedEntity.id===route.id?"picked-route":""}`} style={route.kind==="pipe"?{"--pipe-fluid":item?.color??"transparent"} as React.CSSProperties:undefined} data-content={pipeTransits[0]?.itemId??connected?.itemId}>
                   <path className="track-edge" d={route.path}/>
                   {route.kind==="pipe"?route.cells.map(({x,y,cell},cellIndex)=>{const ratio=pipeFillRatio(pipeTransits,cellIndex,route.cells.length);return <path key={`fluid-${x},${y}`} className="pipe-fluid-segment" d={roundedPath([{x,y,cell}])} strokeWidth={ratio===0?0:.07+ratio*.43} data-fill={ratio.toFixed(2)}/>}):<path className="track-fill" d={route.path}/>}
                   {route.cells.map(({x,y,cell})=>{const anchor=arrowAnchor(x,y,cell);return <path key={`${x},${y}`} className="direction-arrow" d="M -.065 -.05 L .075 0 L -.065 .05 Z" transform={`translate(${anchor.x} ${anchor.y}) rotate(${arrowAngle(cell)})`}/>})}
@@ -1748,15 +2068,15 @@ export default function Home() {
                 const x = index % cols; const y = Math.floor(index / cols); const key=keyOf(x,y),baseCell = grid[key],pipeCell=pipeGrid[key]; const cell=baseCell??pipeCell;
                 const machineState=cell?machineStates[cell.id]:undefined;
                 const status = machineState?.status??"idle";
-                const stateLabel=status==="running"?"生产中":status==="waiting"?"周期等待":status==="starved"?"缺少输入":status==="blocked"?"输出阻塞":status==="unpowered"?"未供电":"已暂停";
+                const stateLabel=status==="running"?"生产中":status==="waiting"?"周期等待":status==="starved"?"缺少输入":status==="blocked"?"输出阻塞":status==="unpowered"?"未供电":status==="environment"?"环境不足":"已暂停";
                 const definition=cell&&cell.kind in MACHINE_DEFINITIONS?MACHINE_DEFINITIONS[cell.kind as ProductionKind]:null;
-                const currentRecipe=definition?activeRecipe(definition,cell?.recipeId):null;
+                const currentRecipe=definition?activeRecipe(definition,machineState?.recipeId??cell?.recipeId):null;
                 const deviceInventoryFull=Boolean(cell&&inventoryFullIds.has(cell.id));
                 const machine = definition&&currentRecipe ? { name:definition.name, recipe:`${modeLabel(currentRecipe.mode)} · ${currentRecipe.name}`, state:stateLabel, blocked:status==="blocked"||deviceInventoryFull?"是":"否" } : null;
                 const processing = status === "running";
                 const processProgress = machineState?.progress??0;
                 const remainingSeconds = machineState?.remaining??"--";
-                const machineImage = definition?.image??null;
+                const machineImage = definition&&currentRecipe?machineImageFor(definition,currentRecipe):null;
                 const cellWidth=cell?.width??cell?.size??1,cellHeight=cell?.height??cell?.size??1;
                 const cellPorts=portsByCell.get(keyOf(x,y))??[];
                 const footprintStyle=cell?.root?{left:`-${(cell.partX??0)*100}%`,top:`-${(cell.partY??0)*100}%`,right:`-${(cellWidth-1-(cell.partX??0))*100}%`,bottom:`-${(cellHeight-1-(cell.partY??0))*100}%`}:undefined;
@@ -1795,7 +2115,7 @@ export default function Home() {
                     setNotice("设备只能从底部目录拖到画布上添加");
                   }} onMouseEnter={() => {if(beltBuildMode)setHoveredEntity(baseCell&&!isTransport(baseCell.kind)?{id:baseCell.id,x,y}:null)}} onMouseLeave={()=>{if(beltBuildMode&&hoveredEntity?.id===baseCell?.id)setHoveredEntity(null)}}
                   onContextMenu={(e) => {e.preventDefault();if(beltBuildMode){cancelBeltDraft();return}deleteAt(x,y,hoverTransport)}}>
-                    {baseCell && !isTransport(baseCell.kind) && <>{baseCell.root && <span style={footprintStyle} className={`cell-glyph root ${!machine ? "compact" : ""} ${baseCell.kind==="powerPole"?"power-pole":""} ${entitySelected?"selected-root":""} ${deviceInventoryFull?"inventory-full":""}`}><b><AssetThumb src={machineImage??tools.find((t) => t.kind === baseCell.kind)?.image} label={tools.find((t) => t.kind === baseCell.kind)?.label??"设备"}/></b>{baseCell.kind==="depot"&&<span className="depot-source">{depotItem?<><AssetThumb src={depotItem.image} label={depotItem.name}/><small>{depotItem.name}</small></>:<small>未选择物品</small>}</span>}{machine && <span className="machine-overlay"><strong className="machine-name">{machine.name}</strong><span className="machine-recipe">{machine.recipe}</span><small className={status}>状态 · {machine.state}</small><small className={`power-state ${machineState?.powered?"powered":"unpowered"}`}>供电 · {machineState?.powered?"正常":"断开"}</small><em>阻塞 · {machine.blocked}</em><span className="machine-progress"><i><b className={processProgress===0?"cycle-reset":""} style={{width:`${processProgress}%`}}/></i><em>{processing ? `${processProgress}% · 剩余 ${remainingSeconds}s` : status==="unpowered" ? "等待供电 · --" : status==="starved" ? "缺少输入 · --" : status==="blocked" ? "输出阻塞 · --" : running ? "周期等待 · --" : "未启动 · --"}</em></span></span>}{baseCell.kind==="powerPole"&&<span className="power-pole-label"><strong>供电桩</strong><small>12 × 12</small></span>}</span>}{cellPorts.filter((port)=>!hiddenDirectPortKeys.has(port.key)).map((port)=><span key={port.key} className={`port-marker ${port.type} ${port.transport} side-${port.side} ${snapCandidate?.key===port.key?"snap-target":""} ${isPortConnected(grid,pipeGrid,port,directlyConnectedPortKeys)?"connected":""}`} title={`${port.transport==="pipe"?"液体":"固体"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`} aria-label={`${port.transport==="pipe"?"液体":"固体"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`}><span className="port-icon" aria-hidden="true"><i/><b/></span></span>)}{baseCell.root && status === "waiting" && <span className="wait-ring" />}</>}
+                    {baseCell && !isTransport(baseCell.kind) && <>{baseCell.root && <span style={footprintStyle} className={`cell-glyph root ${!machine ? "compact" : ""} ${baseCell.kind==="powerPole"?"power-pole":""} ${entitySelected?"selected-root":""} ${deviceInventoryFull?"inventory-full":""}`}><b><AssetThumb src={machineImage??tools.find((t) => t.kind === baseCell.kind)?.image} label={tools.find((t) => t.kind === baseCell.kind)?.label??"设备"}/></b>{baseCell.kind==="depot"&&<span className="depot-source">{depotItem?<><AssetThumb src={depotItem.image} label={depotItem.name}/><small>{depotItem.name}</small></>:<small>未选择物品</small>}</span>}{machine && <span className="machine-overlay"><strong className="machine-name">{machine.name}</strong><span className="machine-recipe">{machine.recipe}</span><small className={status}>状态 · {machine.state}</small><small className={`power-state ${machineState?.powered?"powered":"unpowered"}`}>供电 · {machineState?.powered?"正常":"断开"}</small><em>阻塞 · {machine.blocked}</em><span className="machine-progress"><i><b className={processProgress===0?"cycle-reset":""} style={{width:`${processProgress}%`}}/></i><em>{processing ? `${processProgress}% · 剩余 ${remainingSeconds}s` : status==="unpowered" ? "等待供电 · --" : status==="environment" ? "等待酸性环境 · --" : status==="starved" ? "缺少输入 · --" : status==="blocked" ? "输出阻塞 · --" : running ? "周期等待 · --" : "未启动 · --"}</em></span></span>}{baseCell.kind==="powerPole"&&<span className="power-pole-label"><strong>供电桩</strong><small>12 × 12</small></span>}</span>}{cellPorts.filter((port)=>!hiddenDirectPortKeys.has(port.key)).map((port)=><span key={port.key} className={`port-marker ${port.type} ${port.transport} side-${port.side} ${snapCandidate?.key===port.key?"snap-target":""} ${isPortConnected(grid,pipeGrid,port,directlyConnectedPortKeys)?"connected":""}`} title={`${port.transport==="pipe"?"管道介质":"固体"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`} aria-label={`${port.transport==="pipe"?"管道介质":"固体"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`}><span className="port-icon" aria-hidden="true"><i/><b/></span></span>)}{baseCell.root && status === "waiting" && <span className="wait-ring" />}</>}
                     {transport&&<span className="transport-tooltip"><span>{routeForCell?.itemId?<AssetThumb src={transport.image} label={transport.name}/>:<i className="empty-item-icon">--</i>}<strong>{transport.kind==="pipe"?"管道":"传送带"} · {transport.name}</strong></span><small>当前流速 {transport.rate}/min · 占用 {transport.cargoCount}/{transport.capacity} 单位</small><small>线路 {routeForCell?.cells.length??0} 格 · 基准运输耗时 {transport.travelSeconds.toFixed(1)}s</small><small>额定吞吐 {transport.kind==="pipe"?PIPE_ITEMS_PER_MINUTE:BELT_ITEMS_PER_MINUTE}/min · {transport.kind==="pipe"?"每格缓存 4 单位":"每格最多 1 件"}</small>{routeForCell&&stalledRouteIds.has(routeForCell.id)&&<small>{transport.targetConnected?"下游库存已满 · 线路满载阻塞":"末端未接输入口 · 线路满载阻塞"}</small>}{transport.connected&&!transport.targetConnected&&!transport.full&&<small>已连接输出口 · 内容将在末端逐格堆积</small>}{!transport.connected&&<small>未连接设备输出口 · 不会生成内容</small>}{secondaryTransport&&<><span className="tooltip-layer"><strong>下层传送带 · {secondaryTransport.name}</strong></span><small>当前流速 {secondaryTransport.rate}/min · 占用 {secondaryTransport.cargoCount}/{secondaryTransport.capacity}</small><small>再次单击可在管道/传送带之间切换选择</small></>}</span>}
                   </button>;
               })}
@@ -1813,7 +2133,7 @@ export default function Home() {
               <svg className="flow-links" width={flowGraph.width} height={flowGraph.height} viewBox={`0 0 ${flowGraph.width} ${flowGraph.height}`} aria-hidden="true">
                 {flowGraph.edges.map((edge)=>{const source=flowGraph.nodes.find((node)=>node.id===edge.from),target=flowGraph.nodes.find((node)=>node.id===edge.to);if(!source||!target)return null;const sx=source.x+flowGraph.nodeWidth,sy=source.y+flowGraph.nodeHeight/2,tx=target.x,ty=target.y+flowGraph.nodeHeight/2,bend=Math.max(48,Math.abs(tx-sx)*.48);return <g key={edge.id} className={`flow-link ${edge.kind}`}><path d={`M ${sx} ${sy} C ${sx+bend} ${sy}, ${tx-bend} ${ty}, ${tx} ${ty}`}/><circle cx={tx} cy={ty} r="3.5"/><title>{edge.kind==="pipe"?"管道":"传送带"} · {edge.itemName}</title></g>})}
               </svg>
-              {flowGraph.nodes.map((node)=>{const state=machineStates[node.id]?.status,status=state==="running"?"生产中":state==="blocked"?"阻塞":state==="starved"?"缺少输入":state==="unpowered"?"未供电":state==="idle"?"已暂停":node.status;return <article key={node.id} className={`flow-node ${node.kind} ${state??"idle"}`} style={{left:node.x,top:node.y,width:flowGraph.nodeWidth,height:flowGraph.nodeHeight}}><header>{node.label}<span>{status}</span></header><div><AssetThumb src={node.image} label={node.label}/><span><strong>{node.detail}</strong><small>{node.kind==="splitter"||node.kind==="pipeSplitter"?"1 入 · 多路输出":node.kind==="merger"||node.kind==="pipeMerger"?"多路输入 · 1 出":"工业设备"}</small></span></div><i className="node-input" aria-hidden="true"/><i className="node-output" aria-hidden="true"/></article>})}
+              {flowGraph.nodes.map((node)=>{const state=machineStates[node.id]?.status,status=state==="running"?"生产中":state==="blocked"?"阻塞":state==="starved"?"缺少输入":state==="environment"?"环境不足":state==="unpowered"?"未供电":state==="idle"?"已暂停":node.status;return <article key={node.id} className={`flow-node ${node.kind} ${state??"idle"}`} style={{left:node.x,top:node.y,width:flowGraph.nodeWidth,height:flowGraph.nodeHeight}}><header>{node.label}<span>{status}</span></header><div><AssetThumb src={node.image} label={node.label}/><span><strong>{node.detail}</strong><small>{node.kind==="splitter"||node.kind==="pipeSplitter"?"1 入 · 多路输出":node.kind==="merger"||node.kind==="pipeMerger"?"多路输入 · 1 出":"工业设备"}</small></span></div><i className="node-input" aria-hidden="true"/><i className="node-output" aria-hidden="true"/></article>})}
             </div>:<div className="flow-empty">画布中还没有可显示的工业设备</div>}
           </div>}
           <div className="status-strip"><span>{notice}</span><span>网格 {cols} × {rows}</span><span>设备/传送带占用 {Math.round(Object.keys(grid).filter(k=>{const [x,y]=k.split(',').map(Number);return x<cols&&y<rows}).length / (cols * rows) * 100)}% · 管道 {counts.pipes} 格</span></div>
@@ -1823,7 +2143,7 @@ export default function Home() {
           <div className="panel-heading"><span>生产监控</span><small>LIVE / 02</small></div>
           <div className="metric-grid"><div><small>设备</small><strong>{counts.devices}</strong></div><div><small>物流格</small><strong>{counts.belts}<span> 带</span> / {counts.pipes}<span> 管</span></strong></div><div><small>已供电</small><strong>{productionStates.filter((state)=>state.powered).length}<span> / {productionStates.length}</span></strong></div><div><small>效率</small><strong>{running&&productionStates.length ? Math.round(productionStates.filter((state)=>state.status==="running").length/productionStates.length*100) : "—"}<span>%</span></strong></div></div>
           <div className="section-title"><span>设备状态</span><small>{running ? "SIMULATION ACTIVE" : "SIMULATION PAUSED"}</small></div>
-          {prioritizedProductionStates.map(({state,sequence})=>{const stateText=state.status==="running"?"生产中":state.status==="waiting"?"周期等待":state.status==="starved"?"缺少输入":state.status==="blocked"?"输出阻塞":state.status==="unpowered"?"未供电":"暂停",definition=MACHINE_DEFINITIONS[state.kind],currentRecipe=activeRecipe(definition,state.recipeId);return <div key={state.id} className={`machine-card ${state.status==="running"?"good":state.status!=="idle"?"warn":""}`}><div className="machine-icon"><AssetThumb src={definition.image} label={definition.name}/></div><div><strong>{definition.name} #{String(sequence).padStart(2,"0")}</strong><small>{modeLabel(currentRecipe.mode)} · {currentRecipe.name} · {stateText} · {state.powered?"供电正常":"供电断开"}</small></div><em>{state.status==="running"?`${state.progress}%`:stateText}</em></div>})}
+          {prioritizedProductionStates.map(({state,sequence})=>{const stateText=state.status==="running"?"生产中":state.status==="waiting"?"周期等待":state.status==="starved"?"缺少输入":state.status==="blocked"?"输出阻塞":state.status==="environment"?"环境不足":state.status==="unpowered"?"未供电":"暂停",definition=MACHINE_DEFINITIONS[state.kind],currentRecipe=activeRecipe(definition,state.recipeId);return <div key={state.id} className={`machine-card ${state.status==="running"?"good":state.status!=="idle"?"warn":""}`}><div className="machine-icon"><AssetThumb src={machineImageFor(definition,currentRecipe)} label={definition.name}/></div><div><strong>{definition.name} #{String(sequence).padStart(2,"0")}</strong><small>{modeLabel(currentRecipe.mode)} · {currentRecipe.name} · {stateText} · {state.powered?"供电正常":"供电断开"}</small></div><em>{state.status==="running"?`${state.progress}%`:stateText}</em></div>})}
           <div className="section-title"><span>产销统计</span><small>ROLLING 5 MINUTES</small></div>
           <section className="production-stats" aria-label="产线物品产出量与消耗量统计">
             {involvedStatsItems.length?<>
