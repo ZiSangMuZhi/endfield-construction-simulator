@@ -97,6 +97,13 @@ Alpha 版优先复用已登记的本地游戏相关图标；参考仓库已提�
 
 生产设备数据由单一固定配方升级为 `recipes[]`。每条配方记录稳定 ID、模式、整数输入/输出与固定周期；设备占格保存当前 `recipeId`。资料确认精炼炉、灌装机、种植机存在会涉及管道的液体模式，当前端口数据用 `modes` 限制可见性和连接判定。塑形机液体模式虽然可在设备模板中确认，但独立配方与端口资料不足，因此本快照只开放已核实的固体配方。
 
+砂叶粉末链以结构化物品页和中文设备表交叉核对：粉碎机 `砂叶 ×1 → 砂叶粉末 ×3 / 2s`，研磨机以 `砂叶粉末 ×1` 配合两份主粉末产出一份致密/细磨粉末。采种机保持纯固体输入；锦草与芽针均为 `植物 ×1 → 对应种子 ×1 / 2s`，芽针数据由简中物品攻略明确列出，锦草由同系列物品页复核。缺失的芽针原图按项目约定使用内容占位，不生成近似素材：
+
+- https://endfield.games/zh-Hans/items/item-plant-moss-powder-3/
+- https://www.gamewolf.tw/endfield/article/facility-23
+- https://3g.ali213.net/gl/html/1740083_109.html
+- https://3g.ali213.net/gl/html/1740083_46.html
+
 对于同一配方存在两个同介质输出的设备，`PortSpec.outputIndex` 显式绑定端口与 `outputs[]` 下标。反应池和提纯机均采用“上方副产物、下方主产物”的映射；若旧配方只有一个同介质输出，找不到对应下标时回退到该介质的第一个输出，以保持旧蓝图可用。
 
 - https://endfield.games/zh-Hans/tutorials/factory/?t=fac-liquid-furnance

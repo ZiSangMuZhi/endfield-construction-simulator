@@ -21,6 +21,8 @@
 | 传送带与初始出货口 | 设备教程确认传送带用途 | 森空岛量化攻略记录每 2 秒 1 件，即 30/min；另一篇配平攻略独立使用相同值 | A | 保持 30/min，并继续把发货间隔与空间移动分离 |
 | 装备原件机六配方 | 两个结构化中文设备页列出相同输入、输出和 10s 周期 | 森空岛息壤产线实测确认 6/min，且息壤消耗 60/min | A | 补齐六种装备原件配方；缺图物品使用内容占位 |
 | 缺料生产行为 | 配方页提供整数批次投料 | 森空岛对照实测显示物料不足会空过生产机会 | A | 保持“整批输入满足后推进周期”，不按连续平均流量凭空补料 |
+| 砂叶粉末链 | 结构化物品页列出粉碎与五条研磨用途 | 中文粉碎机设备表、攻略均确认 `砂叶 1 → 粉末 3 / 2s` | A | 补齐砂叶粉末与研磨机关键配方 |
+| 锦草 / 芽针采种 | 结构化采种机页列出两种植物，设备说明没有液体条件 | 同系列简中物品攻略分别给出 `植物 1 → 种子 1`，芽针种植才需要清水 | A | 采种机只保留固体端口，加入锦草和芽针 2 秒配方 |
 | 协议储存箱 | 教程确认通电后定时回传仓库，也可接传送带 | 尚缺容量、回传间隔、占地与逐格端口 | C | 暂不加入可放置目录，防止伪造吞吐与占地 |
 | 扩容反应池 | 教程和设备页确认更多反应缓存、可同时进行多个反应 | 玩家讨论同样涉及多个活动配方及独立堵塞行为 | C | 暂缓；先设计多配方槽状态机，不以普通反应池复制品代替 |
 
@@ -38,6 +40,10 @@
 - 装备原件机结构化配方：https://endfield.games/zh-Hans/factory/buildings/winder-1/
 - 装备原件机第二份中文配方表：https://www.gamewolf.tw/endfield/article/facility-29
 - 森空岛息壤装备原件产线转载：https://www.gamersky.com/handbook/202601/2082367.shtml
+- 砂叶粉末结构化用途：https://endfield.games/zh-Hans/items/item-plant-moss-powder-3/
+- 粉碎机中文配方表：https://www.gamewolf.tw/endfield/article/facility-23
+- 锦草采种：https://3g.ali213.net/gl/html/1740083_109.html
+- 芽针采种：https://3g.ali213.net/gl/html/1740083_46.html
 - 协议储存箱功能说明：https://endfield.games/zh-Hans/tutorials/factory/?t=fac-liquid-furnance
 - 扩容反应池功能说明：https://endfield.games/en/tutorials/factory/?t=fac-port
 - 扩容反应池配方页：https://end.wiki/zh-Hans/factory/buildings/mix-pool-2/
