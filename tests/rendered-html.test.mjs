@@ -209,7 +209,7 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.doesNotMatch(page, /重叠线路将被覆盖/);
   assert.match(page, /pipeFillRatio/);
   assert.match(page, /className="pipe-fluid-segment"/);
-  assert.match(page, /if\(route\.kind==="pipe"\|\|!transits\.length/);
+  assert.match(page, /if\(route\.direct\|\|route\.kind==="pipe"\|\|!transits\.length/);
   assert.match(page, /设备只能从底部目录拖到画布上添加/);
   assert.match(page, /aria-label=\{`拖动添加\$\{tool\.label\}`\}/);
   assert.doesNotMatch(page, /P-IN|P-OUT/);
@@ -287,6 +287,9 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(css, /\.stat-item\{/);
   assert.match(css, /\.stat-chart\{[^}]*height:32px/);
   assert.match(css, /\.machine-card \.machine-icon img/);
+  assert.match(page, /className=\{processProgress===0\?"cycle-reset":""\}/);
+  assert.match(css, /\.machine-progress>i>b\{[^}]*transition:width \.25s linear/);
+  assert.match(css, /\.machine-progress>i>b\.cycle-reset\{transition:none\}/);
   assert.match(css, /\.content-placeholder\{/);
   assert.match(css, /\.flow-placeholder\{/);
   assert.match(css, /\.recipe-control>\.recipe-rate\{/);
@@ -296,6 +299,14 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(page, /function rotateGroupSelection/);
   assert.match(page, /function deleteGroupSelection/);
   assert.match(page, /onPointerDown=\{startMarquee\}/);
+  assert.match(page, /function resolveDirectPortConnections\(ports:ResolvedPort\[\]\)/);
+  assert.match(page, /directPortConnections\.forEach\(\(\{sourcePort,targetPort\}\)=>\{/);
+  assert.match(page, /cells:\[\{x:targetPort\.cellX,y:targetPort\.cellY/);
+  assert.match(page, /const propagationQueue=routes\.filter/);
+  assert.match(page, /outgoingByEntity\.get\(targetPort\.entityId\)/);
+  assert.match(page, /if\(route\.direct\)return/);
+  assert.match(page, /cellPorts\.filter\(\(port\)=>!hiddenDirectPortKeys\.has\(port\.key\)\)/);
+  assert.match(page, /isPortConnected\(grid,pipeGrid,port,directlyConnectedPortKeys\)/);
   assert.match(css, /\.marquee-box/);
   assert.match(css, /\.cell\.logisticsBridge \.port-marker/);
   assert.match(css, /\.route-track\.draft-route\.invalid/);
