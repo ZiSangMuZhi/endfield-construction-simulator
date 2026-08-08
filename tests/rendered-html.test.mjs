@@ -236,6 +236,8 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(page, /type BeltJoin/);
   assert.match(page, /affectedRouteIds/);
   assert.match(page, /function analyzeDraftRoute/);
+  assert.match(page, /availableSnapPortAtTransportCell/);
+  assert.match(page, /selectSnapPort\(resolvedPorts/);
   assert.match(page, /bridgeKind:draft\.kind==="pipe"\?"pipeBridge":"logisticsBridge"/);
   assert.match(page, /路径有 \$\{analysis\.conflicts\.size\} 处占位或方向冲突/);
   assert.doesNotMatch(page, /重叠线路将被覆盖/);

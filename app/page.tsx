@@ -6,6 +6,7 @@ import { BELT_HEADWAY_TICKS, BELT_ITEMS_PER_MINUTE, PIPE_HEADWAY_TICKS, PIPE_ITE
 import { bridgePortsPair, pairedBridgeOutput } from "../lib/bridge-routing";
 import { RADIAL_CONFIRM_DELAY_MS, RADIAL_HOLD_DELAY_MS, RADIAL_PREOPEN_TOLERANCE_PX, RadialAction, radialSelection } from "../lib/radial-menu";
 import { occupiedSharedSlots, sharedBufferAfterRecipe, sharedBufferCanAccept, sharedBufferWithOutputs } from "../lib/machine-buffer.mjs";
+import { selectSnapPort } from "../lib/port-snapping.mjs";
 
 type TransportKind = "belt" | "pipe";
 type Kind = TransportKind | "refiner" | "crusher" | "fitter" | "molder" | "filler" | "dismantler" | "sealer" | "grinder" | "seedPicker" | "planter" | "reactor" | "expandedReactor" | "purifier" | "waterTreatment" | "forge" | "gearAssembler" | "waterPump" | "acidWaterPump" | "gasDisperser" | "liquidGasConverter" | "solidGasConverter" | "gasReactor" | "splitter" | "merger" | "logisticsBridge" | "itemLimiter" | "pipeSplitter" | "pipeMerger" | "pipeBridge" | "pipeLimiter" | "undergroundPipeInlet" | "undergroundPipeOutlet" | "multiUndergroundPipeInlet" | "multiUndergroundPipeOutlet" | "storagePort" | "tank" | "depot" | "powerPole";
@@ -1309,14 +1310,16 @@ export default function Home() {
     return charts;
   },[elapsedSeconds,involvedStatsItems,simulation.itemStats]);
   const snapCandidate=useMemo(()=>{
-    if(!beltBuildMode||!hoveredEntity)return null;
+    if(!beltBuildMode)return null;
     const type:PortType=beltDraft?"input":"output";
+    const point=hoveredEntity??beltPreviewPoint;
+    if(!point)return null;
     const last=beltDraft?.cells[beltDraft.cells.length-1];
     const draftKeys=new Set(beltDraft?.cells.map((point)=>keyOf(point.x,point.y))??[]);
     const replaceable=new Set(beltDraft?.replan?.replaceKeys??[]);
     const transportGrid=beltBuildMode==="pipe"?pipeGrid:grid;
-    return resolvedPorts.filter((port)=>port.transport===beltBuildMode&&port.entityId===hoveredEntity.id&&port.type===type&&port.externalX>=0&&port.externalY>=0&&port.externalX<cols&&port.externalY<rows&&(!transportGrid[keyOf(port.externalX,port.externalY)]||replaceable.has(keyOf(port.externalX,port.externalY)))&&(!draftKeys.has(keyOf(port.externalX,port.externalY))||(last?.x===port.externalX&&last?.y===port.externalY))).sort((a,b)=>Math.abs(a.cellX-hoveredEntity.x)+Math.abs(a.cellY-hoveredEntity.y)-Math.abs(b.cellX-hoveredEntity.x)-Math.abs(b.cellY-hoveredEntity.y))[0]??null;
-  },[beltBuildMode,beltDraft,cols,grid,hoveredEntity,pipeGrid,resolvedPorts,rows]);
+    return selectSnapPort(resolvedPorts,{transport:beltBuildMode,type,x:point.x,y:point.y,entityId:hoveredEntity?.id,cols,rows,occupiedKeys:new Set(Object.keys(transportGrid)),draftKeys,replaceableKeys:replaceable,lastPoint:last});
+  },[beltBuildMode,beltDraft,beltPreviewPoint,cols,grid,hoveredEntity,pipeGrid,resolvedPorts,rows]);
   const committedDraftRoute=useMemo(()=>beltDraft?makeDraftRoute(beltDraft):null,[beltDraft]);
   const liveDraftRoute=useMemo(()=>{
     if(!beltBuildMode||!beltDraft||!beltPreviewPoint||beltDraft.targetPort)return null;
@@ -1666,7 +1669,15 @@ export default function Home() {
     const draftKeys=new Set(beltDraft?.cells.map((point)=>keyOf(point.x,point.y))??[]);
     const replaceable=new Set(beltDraft?.replan?.replaceKeys??[]);
     const kind=beltDraft?.kind??beltBuildMode??"belt",transportGrid=kind==="pipe"?pipeGrid:grid;
-    return resolvedPorts.filter((port)=>port.transport===kind&&port.entityId===entityId&&port.type===type&&port.externalX>=0&&port.externalY>=0&&port.externalX<cols&&port.externalY<rows&&(!transportGrid[keyOf(port.externalX,port.externalY)]||replaceable.has(keyOf(port.externalX,port.externalY)))&&(!draftKeys.has(keyOf(port.externalX,port.externalY))||(last?.x===port.externalX&&last?.y===port.externalY))).sort((a,b)=>Math.abs(a.cellX-x)+Math.abs(a.cellY-y)-Math.abs(b.cellX-x)-Math.abs(b.cellY-y))[0]??null;
+    return selectSnapPort(resolvedPorts,{transport:kind,type,x,y,entityId,cols,rows,occupiedKeys:new Set(Object.keys(transportGrid)),draftKeys,replaceableKeys:replaceable,lastPoint:last});
+  }
+
+  function availableSnapPortAtTransportCell(type:PortType,x:number,y:number) {
+    const last=beltDraft?.cells[beltDraft.cells.length-1];
+    const draftKeys=new Set(beltDraft?.cells.map((point)=>keyOf(point.x,point.y))??[]);
+    const replaceable=new Set(beltDraft?.replan?.replaceKeys??[]);
+    const kind=beltDraft?.kind??beltBuildMode??"belt",transportGrid=kind==="pipe"?pipeGrid:grid;
+    return selectSnapPort(resolvedPorts,{transport:kind,type,x,y,cols,rows,occupiedKeys:new Set(Object.keys(transportGrid)),draftKeys,replaceableKeys:replaceable,lastPoint:last});
   }
 
   function startBeltReplan(x:number,y:number) {
@@ -1679,7 +1690,8 @@ export default function Home() {
   }
 
   function addBeltWaypoint(x:number,y:number,entityId?:string) {
-    const port=entityId?availableSnapPort(entityId,beltDraft?"input":"output",x,y):null;
+    const portType:PortType=beltDraft?"input":"output";
+    const port=entityId?availableSnapPort(entityId,portType,x,y):availableSnapPortAtTransportCell(portType,x,y);
     if(entityId&&!port){setNotice(beltDraft?"该设备没有可用输入口":"该设备没有可用输出口");return}
     const point=port?{x:port.externalX,y:port.externalY}:{x,y};
     if(point.x<0||point.y<0||point.x>=cols||point.y>=rows){setNotice("路径点超出画布");return}
@@ -1988,7 +2000,7 @@ export default function Home() {
               <button className="delete-action" onClick={()=>groupSelection?deleteGroupSelection():deleteSelected()}><kbd>Del</kbd> 拆除</button>
               <button onClick={()=>{setSelectedEntityId(null);setSelectedTransportKey(null);setGroupSelection(null);setPickedEntity(null);setPickedGroup(null);setPlacementPreview(null);setSelectionMode(false)}}>取消</button>
             </div>}
-            {beltBuildMode&&<div className="belt-build-toolbar"><span><kbd>{beltBuildMode==="pipe"?"Q":"E"}</kbd> {beltBuildMode==="pipe"?"管道":"传送带"}模式</span><strong>{beltDraft?`${beltDraft.waypoints.length} 个路径点`:"点击创建起点"}</strong><small>{beltDraft?"移动鼠标实时预览自动寻路":"可从空格或匹配类型的设备输出口开始"}</small><span><kbd>Esc / {beltBuildMode==="pipe"?"Q":"E"}</kbd> 完成　<kbd>右键</kbd> 取消</span></div>}
+            {beltBuildMode&&<div className="belt-build-toolbar"><span><kbd>{beltBuildMode==="pipe"?"Q":"E"}</kbd> {beltBuildMode==="pipe"?"管道":"传送带"}模式</span><strong>{beltDraft?`${beltDraft.waypoints.length} 个路径点`:"点击创建起点"}</strong><small>{beltDraft?"实时寻路 · 靠近匹配接口自动吸附":"可从空格或匹配类型的设备输出口开始"}</small><span><kbd>Esc / {beltBuildMode==="pipe"?"Q":"E"}</kbd> 完成　<kbd>右键</kbd> 取消</span></div>}
             {inventoryMenuVisible&&selectedEntityId&&selectedEntity&&<aside className="device-menu" role="dialog" aria-label={`${tools.find((tool)=>tool.kind===selectedEntity.kind)?.label??"设备"}库存`}>
               <header><div><small>DEVICE BUFFER</small><strong>{selectedDefinition?.name??tools.find((tool)=>tool.kind===selectedEntity.kind)?.label}</strong></div><button aria-label="关闭设备库存" onClick={()=>setSelectedEntityId(null)}>×</button></header>
               {PIPE_TRANSFER_DEVICES.has(selectedEntity.kind)&&<section className="underground-link"><div className="recipe-heading"><strong>地下暗管配对</strong><span>{selectedEntity.pairedEntityId?"已连接":"未连接"}</span></div><label><span>配对设备</span><select aria-label="暗管配对设备" value={selectedEntity.pairedEntityId??""} onChange={(event)=>setUndergroundPair(selectedEntityId,event.target.value)}><option value="">不配对</option>{undergroundCandidates.map((candidate,index)=><option key={candidate.id} value={candidate.id}>{tools.find((tool)=>tool.kind===candidate.kind)?.label} #{String(index+1).padStart(2,"0")}</option>)}</select></label><small>同规格入口与出口一对一连接；配对独立保存，不依赖画布上的可见管线路径。</small></section>}
