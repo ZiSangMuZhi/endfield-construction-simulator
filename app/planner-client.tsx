@@ -617,17 +617,23 @@ function AssetThumb({src,label,className=""}:{src?:string;label:string;className
 
 function SearchableItemSelect({items,value,onChange,ariaLabel,emptyLabel="选择物品",allowEmpty=false,compact=false}:{items:IndustrialItem[];value:string;onChange:(value:string)=>void;ariaLabel:string;emptyLabel?:string;allowEmpty?:boolean;compact?:boolean}) {
   const [query,setQuery]=useState("");
+  const [open,setOpen]=useState(false);
   const normalized=query.trim().toLocaleLowerCase("zh-CN");
   const visibleItems=normalized?items.filter((item)=>`${item.name} ${item.id}`.toLocaleLowerCase("zh-CN").includes(normalized)):items;
   const selectedItem=items.find((item)=>item.id===value);
-  const visibleValue=visibleItems.some((item)=>item.id===value)?value:"";
-  return <div className={`item-picker ${compact?"compact":""}`}>
-    <div className="item-picker-search">{selectedItem&&<AssetThumb src={selectedItem.image} label={selectedItem.name}/>}<input type="search" aria-label={`${ariaLabel}查找`} placeholder="输入物品名称查找" value={query} onChange={(event)=>setQuery(event.target.value)}/>{query&&<button type="button" aria-label={`清除${ariaLabel}查找`} onClick={()=>setQuery("")}>×</button>}</div>
-    <select aria-label={ariaLabel} value={visibleValue} onChange={(event)=>onChange(event.target.value)}>
-      <option value="" disabled={!allowEmpty}>{normalized&&!visibleItems.length?"没有匹配物品":emptyLabel}</option>
-      {visibleItems.map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}
-    </select>
-    {normalized&&<small>{visibleItems.length} 个匹配结果</small>}
+  const choose=(nextValue:string)=>{onChange(nextValue);setQuery("");setOpen(false)};
+  return <div className={`item-picker ${compact?"compact":""}`} onBlur={(event)=>{if(!event.currentTarget.contains(event.relatedTarget))setOpen(false)}} onKeyDown={(event)=>{if(event.key==="Escape")setOpen(false)}}>
+    <div className="item-picker-search"><input type="search" aria-label={`${ariaLabel}查找`} placeholder="输入物品名称查找" value={query} onFocus={()=>setOpen(true)} onChange={(event)=>{setQuery(event.target.value);setOpen(true)}}/>{query&&<button type="button" aria-label={`清除${ariaLabel}查找`} onClick={()=>setQuery("")}>×</button>}</div>
+    <button type="button" className="item-picker-value" aria-label={ariaLabel} aria-haspopup="listbox" aria-expanded={open} onClick={()=>setOpen((current)=>!current)}>
+      {selectedItem?<AssetThumb src={selectedItem.image} label={selectedItem.name}/>:<span className="item-picker-empty" aria-hidden="true">--</span>}
+      <span>{selectedItem?.name??emptyLabel}</span><i aria-hidden="true"/>
+    </button>
+    {open&&<div className="item-picker-options" role="listbox" aria-label={`${ariaLabel}选项`}>
+      {allowEmpty&&<button type="button" role="option" aria-selected={!value} className={!value?"selected":""} onMouseDown={(event)=>event.preventDefault()} onClick={()=>choose("")}><span className="item-picker-empty" aria-hidden="true">--</span><span>{emptyLabel}</span></button>}
+      {visibleItems.map((item)=><button type="button" key={item.id} role="option" aria-selected={item.id===value} className={item.id===value?"selected":""} onMouseDown={(event)=>event.preventDefault()} onClick={()=>choose(item.id)}><AssetThumb src={item.image} label={item.name}/><span>{item.name}</span></button>)}
+      {!visibleItems.length&&<small>没有匹配物品</small>}
+    </div>}
+    {normalized&&<small className="item-picker-count">{visibleItems.length} 个匹配结果</small>}
   </div>;
 }
 

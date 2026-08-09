@@ -216,6 +216,9 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(page, /仓库取货口输出物品/);
   assert.match(page, /function SearchableItemSelect/);
   assert.match(page, /输入物品名称查找/);
+  assert.match(page, /className="item-picker-value"/);
+  assert.match(page, /role="listbox"/);
+  assert.match(page, /visibleItems\.map\(\(item\)=><button[\s\S]*?<AssetThumb src=\{item\.image\}/);
   assert.match(page, /SearchableItemSelect items=\{SOLID_INDUSTRIAL_ITEMS\}[\s\S]*?ariaLabel="仓库取货口输出物品"/);
   assert.match(page, /SearchableItemSelect items=\{selectedInventoryItems\}[\s\S]*?ariaLabel="库存物品"/);
   assert.doesNotMatch(page, /draggable className/);
@@ -344,6 +347,8 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(css, /\.port-marker\.connected\{[^}]*outline:1px solid #78913f/);
   assert.match(css, /\.port-marker\.connected:after\{display:none\}/);
   assert.match(css, /\.item-picker-search/);
+  assert.match(css, /\.item-picker-value\{[^}]*font-size:11px/);
+  assert.match(css, /\.item-picker-options button>img/);
   assert.match(css, /\.device-menu\{overscroll-behavior:contain\}/);
   assert.match(css, /\.pipe-fluid-segment/);
   assert.match(css, /\.grid-wrap\{[^}]*background:var\(--paper\)/);
