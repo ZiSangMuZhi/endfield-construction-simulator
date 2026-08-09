@@ -2,6 +2,7 @@
 /* eslint-disable @next/next/no-img-element -- local game icons are rendered at native blueprint scale */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { BELT_HEADWAY_TICKS, BELT_ITEMS_PER_MINUTE, PIPE_HEADWAY_TICKS, PIPE_ITEMS_PER_MINUTE, PIPE_LANE_PROFILE, SIM_TICK_MS, SIM_TICKS_PER_SECOND, advanceBeltLane, advancePipeLane, beltLaneCanAccept, beltLaneIsFull, beltTravelSeconds, nextLaneReadyTick, pipeLaneCanAccept, pipeLaneIsFull } from "../lib/belt-timing";
 import { bridgePortsPair, pairedBridgeOutput } from "../lib/bridge-routing";
 import { DEVICE_DRAG_THRESHOLD_PX, deviceDragTarget } from "../lib/device-drag";
@@ -451,7 +452,7 @@ const EQUIPMENT_LAYOUTS: Partial<Record<Kind,EquipmentLayout>> = {
   refiner:{width:3,height:3,inputs:[...edgePorts(3,2,0),{x:1,y:2,side:1,transport:"pipe",modes:["fluid"]}],outputs:[...edgePorts(3,0,2),{x:1,y:0,side:3,transport:"pipe",modes:["fluid"]}]},
   crusher:{width:3,height:3,inputs:edgePorts(3,2,0),outputs:edgePorts(3,0,2)},
   fitter:{width:3,height:3,inputs:edgePorts(3,2,0),outputs:edgePorts(3,0,2)},
-  molder:{width:3,height:3,inputs:[...edgePorts(3,2,0),{x:1,y:1,side:0,transport:"pipe",modes:["gas"]}],outputs:edgePorts(3,0,2)},
+  molder:{width:3,height:3,inputs:[...edgePorts(3,2,0),{x:2,y:1,side:0,transport:"pipe",modes:["gas"]}],outputs:edgePorts(3,0,2)},
   filler:{width:4,height:6,inputs:[...edgePorts(6,2,0),{x:1,y:5,side:1,transport:"pipe",modes:["fluid","gas"]}],outputs:edgePorts(6,0,3)},
   dismantler:{width:4,height:6,inputs:[{x:0,y:2,side:2}],outputs:[{x:3,y:1,side:0,outputIndex:0},{x:3,y:4,side:0,transport:"pipe",outputIndex:1}]},
   sealer:{width:4,height:6,inputs:edgePorts(6,2,0),outputs:edgePorts(6,0,3)},
@@ -618,22 +619,34 @@ function AssetThumb({src,label,className=""}:{src?:string;label:string;className
 function SearchableItemSelect({items,value,onChange,ariaLabel,emptyLabel="选择物品",allowEmpty=false,compact=false}:{items:IndustrialItem[];value:string;onChange:(value:string)=>void;ariaLabel:string;emptyLabel?:string;allowEmpty?:boolean;compact?:boolean}) {
   const [query,setQuery]=useState("");
   const [open,setOpen]=useState(false);
+  const pickerRef=useRef<HTMLDivElement>(null);
+  const valueRef=useRef<HTMLButtonElement>(null);
+  const optionsRef=useRef<HTMLDivElement>(null);
+  const [optionsStyle,setOptionsStyle]=useState<React.CSSProperties>({});
   const normalized=query.trim().toLocaleLowerCase("zh-CN");
   const visibleItems=normalized?items.filter((item)=>`${item.name} ${item.id}`.toLocaleLowerCase("zh-CN").includes(normalized)):items;
   const selectedItem=items.find((item)=>item.id===value);
   const choose=(nextValue:string)=>{onChange(nextValue);setQuery("");setOpen(false)};
-  return <div className={`item-picker ${compact?"compact":""}`} onBlur={(event)=>{if(!event.currentTarget.contains(event.relatedTarget))setOpen(false)}} onKeyDown={(event)=>{if(event.key==="Escape")setOpen(false)}}>
+  useEffect(()=>{
+    if(!open)return;
+    const positionOptions=()=>{const rect=valueRef.current?.getBoundingClientRect();if(rect)setOptionsStyle({left:rect.left,top:rect.bottom+4,width:rect.width,maxHeight:Math.max(96,window.innerHeight-rect.bottom-12)})};
+    const closeOutside=(event:PointerEvent)=>{const target=event.target as Node;if(!pickerRef.current?.contains(target)&&!optionsRef.current?.contains(target))setOpen(false)};
+    positionOptions();document.addEventListener("pointerdown",closeOutside);document.addEventListener("scroll",positionOptions,true);window.addEventListener("resize",positionOptions);
+    return()=>{document.removeEventListener("pointerdown",closeOutside);document.removeEventListener("scroll",positionOptions,true);window.removeEventListener("resize",positionOptions)};
+  },[open]);
+  const options=open?createPortal(<div ref={optionsRef} style={optionsStyle} className="item-picker-options" role="listbox" aria-label={`${ariaLabel}选项`} onWheel={(event)=>event.stopPropagation()} onKeyDown={(event)=>{if(event.key==="Escape")setOpen(false)}}>
+    {normalized&&<small className="item-picker-count">{visibleItems.length} 个匹配结果</small>}
+    {allowEmpty&&<button type="button" role="option" aria-selected={!value} className={!value?"selected":""} onMouseDown={(event)=>event.preventDefault()} onClick={()=>choose("")}><span className="item-picker-empty" aria-hidden="true">--</span><span>{emptyLabel}</span></button>}
+    {visibleItems.map((item)=><button type="button" key={item.id} role="option" aria-selected={item.id===value} className={item.id===value?"selected":""} onMouseDown={(event)=>event.preventDefault()} onClick={()=>choose(item.id)}><AssetThumb src={item.image} label={item.name}/><span>{item.name}</span></button>)}
+    {!visibleItems.length&&<small>没有匹配物品</small>}
+  </div>,document.body):null;
+  return <div ref={pickerRef} className={`item-picker ${compact?"compact":""}`} onWheel={(event)=>event.stopPropagation()} onKeyDown={(event)=>{if(event.key==="Escape")setOpen(false)}}>
     <div className="item-picker-search"><input type="search" aria-label={`${ariaLabel}查找`} placeholder="输入物品名称查找" value={query} onFocus={()=>setOpen(true)} onChange={(event)=>{setQuery(event.target.value);setOpen(true)}}/>{query&&<button type="button" aria-label={`清除${ariaLabel}查找`} onClick={()=>setQuery("")}>×</button>}</div>
-    <button type="button" className="item-picker-value" aria-label={ariaLabel} aria-haspopup="listbox" aria-expanded={open} onClick={()=>setOpen((current)=>!current)}>
+    <button ref={valueRef} type="button" className="item-picker-value" aria-label={ariaLabel} aria-haspopup="listbox" aria-expanded={open} onClick={()=>setOpen((current)=>!current)}>
       {selectedItem?<AssetThumb src={selectedItem.image} label={selectedItem.name}/>:<span className="item-picker-empty" aria-hidden="true">--</span>}
       <span>{selectedItem?.name??emptyLabel}</span><i aria-hidden="true"/>
     </button>
-    {open&&<div className="item-picker-options" role="listbox" aria-label={`${ariaLabel}选项`}>
-      {allowEmpty&&<button type="button" role="option" aria-selected={!value} className={!value?"selected":""} onMouseDown={(event)=>event.preventDefault()} onClick={()=>choose("")}><span className="item-picker-empty" aria-hidden="true">--</span><span>{emptyLabel}</span></button>}
-      {visibleItems.map((item)=><button type="button" key={item.id} role="option" aria-selected={item.id===value} className={item.id===value?"selected":""} onMouseDown={(event)=>event.preventDefault()} onClick={()=>choose(item.id)}><AssetThumb src={item.image} label={item.name}/><span>{item.name}</span></button>)}
-      {!visibleItems.length&&<small>没有匹配物品</small>}
-    </div>}
-    {normalized&&<small className="item-picker-count">{visibleItems.length} 个匹配结果</small>}
+    {options}
   </div>;
 }
 
@@ -2128,10 +2141,10 @@ export default function Home() {
             <div className="canvas-heading"><span className="live-dot" /><span>{canvasView==="blueprint"?"蓝图预览 / AIC-01":"产线流程图 / NODE OVERVIEW"}</span><details className="shortcut-guide"><summary>按键操作</summary><div><span><kbd>E</kbd>传送带</span><span><kbd>Q</kbd>管道</span><span><kbd>X</kbd>框选</span><span><kbd>拖动</kbd>移动设备</span><span><kbd>R</kbd>旋转</span><span><kbd>C</kbd>复制</span><span><kbd>Del</kbd>拆除</span><span><kbd>滚轮</kbd>缩放</span><span><kbd>中键拖动</kbd>平移画布</span><small>单击选择设备或线路 · 长按设备打开轮盘</small></div></details></div>
             <div className="canvas-controls">
               <div className="canvas-view-switch" role="group" aria-label="画布视图"><button className={canvasView==="blueprint"?"active":""} onClick={()=>setCanvasView("blueprint")}>蓝图</button><button className={canvasView==="flow"?"active":""} onClick={()=>setCanvasView("flow")}>流程图</button></div>
-              {canvasView==="blueprint"?<><button onClick={() => setZoom(Math.max(.55, zoom-.1))}>−</button><span>{Math.round(zoom*100)}%</span><button onClick={() => setZoom(Math.min(1.7, zoom+.1))}>＋</button>
+              {canvasView==="blueprint"?<><button onClick={() => setZoom(Math.max(.55, zoom-.1))}>−</button><span>{Math.round(zoom*100)}%</span><button onClick={() => setZoom(Math.min(3, zoom+.1))}>＋</button>
               <details className="settings"><summary>画布设置</summary><div className="settings-popover">
                 <label><span>网格对比度 <b>{Math.round(gridOpacity*100)}%</b></span><input type="range" min="0.03" max="0.35" step="0.01" value={gridOpacity} onChange={e=>setGridOpacity(Number(e.target.value))}/></label>
-                <label><span>缩放 <b>{Math.round(zoom*100)}%</b></span><input type="range" min="0.55" max="1.7" step="0.05" value={zoom} onChange={e=>setZoom(Number(e.target.value))}/></label>
+                <label><span>缩放 <b>{Math.round(zoom*100)}%</b></span><input type="range" min="0.55" max="3" step="0.05" value={zoom} onChange={e=>setZoom(Number(e.target.value))}/></label>
                 <div className="size-inputs"><label>列数<input type="number" min="12" max={MAX_CANVAS_SIZE} value={cols} onChange={e=>setCols(Math.max(12,Math.min(MAX_CANVAS_SIZE,Number(e.target.value))))}/></label><label>行数<input type="number" min="8" max={MAX_CANVAS_SIZE} value={rows} onChange={e=>setRows(Math.max(8,Math.min(MAX_CANVAS_SIZE,Number(e.target.value))))}/></label></div>
                 <button onClick={()=>{setPan({x:0,y:0});setZoom(1)}}>重置视图</button><small>滚轮缩放 · 按住滚轮拖动画布</small>
               </div></details></>:<span className="flow-summary">{flowGraph.nodes.length} 节点 · {flowGraph.edges.length} 连接</span>}
@@ -2141,7 +2154,7 @@ export default function Home() {
             onMouseDown={e=>{if(e.button===1||e.altKey){e.preventDefault();setPanning({x:e.clientX,y:e.clientY,ox:pan.x,oy:pan.y})}}}
             onMouseMove={e=>{if(panning)setPan({x:panning.ox+e.clientX-panning.x,y:panning.oy+e.clientY-panning.y})}}
             onMouseUp={()=>setPanning(null)} onMouseLeave={()=>setPanning(null)}
-            onWheel={e=>{e.preventDefault();setZoom(z=>Math.max(.55,Math.min(1.7,z*Math.exp(-e.deltaY*.001))))}}>
+            onWheel={e=>{e.preventDefault();setZoom(z=>Math.max(.55,Math.min(3,z*Math.exp(-e.deltaY*.001))))}}>
             {radialMenu&&<div className={`radial-menu ${radialMenu.phase}`} role="menu" aria-label={`${radialEntityLabel}快捷操作`} data-active={radialMenu.active??"none"} style={{left:radialMenu.x,top:radialMenu.y} as React.CSSProperties}>
               <span className="radial-ring" aria-hidden="true"/>
               {radialMenu.distance>0&&<span className="radial-vector" aria-hidden="true" style={{width:Math.min(82,Math.max(0,radialMenu.distance-18)),transform:`rotate(${radialMenu.angle}deg)`}}/>}

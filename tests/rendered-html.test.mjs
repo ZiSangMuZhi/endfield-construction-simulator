@@ -194,6 +194,8 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(page, /sourceType:"route"/);
   assert.match(page, /setSelectedTransportKey\(key\)/);
   assert.match(page, /onWheel=\{e=>\{e\.preventDefault\(\)/);
+  assert.match(page, /Math\.min\(3,z\*Math\.exp/);
+  assert.match(page, /max="3" step="0\.05" value=\{zoom\}/);
   assert.match(page, /className="device-menu"[\s\S]*?onWheel=\{\(event\)=>event\.stopPropagation\(\)\}/);
   assert.match(page, /aria-label="放入数量"/);
   assert.match(page, /放入输入库存/);
@@ -218,6 +220,9 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(page, /输入物品名称查找/);
   assert.match(page, /className="item-picker-value"/);
   assert.match(page, /role="listbox"/);
+  assert.match(page, /createPortal\(<div ref=\{optionsRef\}/);
+  assert.match(page, /className=\{`item-picker/);
+  assert.match(page, /onWheel=\{\(event\)=>event\.stopPropagation\(\)\}/);
   assert.match(page, /visibleItems\.map\(\(item\)=><button[\s\S]*?<AssetThumb src=\{item\.image\}/);
   assert.match(page, /SearchableItemSelect items=\{SOLID_INDUSTRIAL_ITEMS\}[\s\S]*?ariaLabel="仓库取货口输出物品"/);
   assert.match(page, /SearchableItemSelect items=\{selectedInventoryItems\}[\s\S]*?ariaLabel="库存物品"/);
@@ -349,6 +354,8 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(css, /\.item-picker-search/);
   assert.match(css, /\.item-picker-value\{[^}]*font-size:11px/);
   assert.match(css, /\.item-picker-options button>img/);
+  assert.match(css, /\.item-picker-options\{position:fixed;z-index:100/);
+  assert.match(page, /molder:\{width:3,height:3,inputs:\[\.\.\.edgePorts\(3,2,0\),\{x:2,y:1,side:0,transport:"pipe",modes:\["gas"\]\}\]/);
   assert.match(css, /\.device-menu\{overscroll-behavior:contain\}/);
   assert.match(css, /\.pipe-fluid-segment/);
   assert.match(css, /\.grid-wrap\{[^}]*background:var\(--paper\)/);
