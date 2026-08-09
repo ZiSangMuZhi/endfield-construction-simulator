@@ -52,9 +52,9 @@ type PowerZone = { id:string; x:number; y:number; size:number };
 type GasZone = PowerZone & { itemId?:string };
 type Point = { x:number; y:number };
 type PortType = "input" | "output";
-type PortSpec = { x:number; y:number; side:Direction; transport?:TransportKind; modes?:MachineMode[]; outputIndex?:number };
+type PortSpec = { x:number; y:number; side:Direction; transport?:TransportKind; modes?:MachineMode[]; outputIndex?:number; maintenance?:boolean };
 type EquipmentLayout = { width:number; height:number; inputs:PortSpec[]; outputs:PortSpec[] };
-type ResolvedPort = { key:string; entityId:string; entityKind:Kind; type:PortType; index:number; side:Direction; transport:TransportKind; cellX:number; cellY:number; externalX:number; externalY:number; outputIndex?:number };
+type ResolvedPort = { key:string; entityId:string; entityKind:Kind; type:PortType; index:number; side:Direction; transport:TransportKind; cellX:number; cellY:number; externalX:number; externalY:number; outputIndex?:number; maintenance?:boolean };
 type BeltReplan = { routeId:string; replaceKeys:string[]; anchorEntry?:Direction };
 type BeltJoin = { key:string; rotation:Direction };
 type BeltDraft = { kind:TransportKind; cells:Point[]; waypoints:Point[]; sourcePort?:ResolvedPort; targetPort?:ResolvedPort; join?:BeltJoin; replan?:BeltReplan };
@@ -468,8 +468,8 @@ const EQUIPMENT_LAYOUTS: Partial<Record<Kind,EquipmentLayout>> = {
   waterPump:{width:2,height:2,inputs:[],outputs:[{x:1,y:1,side:0,transport:"pipe"}]},
   acidWaterPump:{width:2,height:2,inputs:[],outputs:[{x:1,y:1,side:0,transport:"pipe"}]},
   gasDisperser:{width:3,height:3,inputs:[{x:0,y:1,side:2,transport:"pipe"}],outputs:[]},
-  liquidGasConverter:{width:5,height:5,inputs:[{x:4,y:1,side:0,transport:"pipe"},{x:4,y:3,side:0,transport:"pipe"},{x:2,y:4,side:1,transport:"pipe"}],outputs:[{x:0,y:1,side:2,transport:"pipe"},{x:0,y:3,side:2,transport:"pipe"}]},
-  solidGasConverter:{width:5,height:5,inputs:[{x:1,y:4,side:1,modes:["gas"]},{x:3,y:4,side:1,modes:["gas"]},{x:4,y:1,side:0,transport:"pipe",modes:["solid"]},{x:4,y:3,side:0,transport:"pipe",modes:["solid"]},{x:2,y:4,side:1,transport:"pipe"}],outputs:[{x:0,y:1,side:2,transport:"pipe",modes:["gas"]},{x:0,y:3,side:2,transport:"pipe",modes:["gas"]},{x:1,y:0,side:3,modes:["solid"]},{x:3,y:0,side:3,modes:["solid"]}]},
+  liquidGasConverter:{width:5,height:5,inputs:[{x:4,y:1,side:0,transport:"pipe"},{x:4,y:3,side:0,transport:"pipe"},{x:2,y:4,side:1,transport:"pipe",maintenance:true}],outputs:[{x:0,y:1,side:2,transport:"pipe"},{x:0,y:3,side:2,transport:"pipe"}]},
+  solidGasConverter:{width:5,height:5,inputs:[{x:1,y:4,side:1,modes:["gas"]},{x:3,y:4,side:1,modes:["gas"]},{x:4,y:1,side:0,transport:"pipe",modes:["solid"]},{x:4,y:3,side:0,transport:"pipe",modes:["solid"]},{x:2,y:4,side:1,transport:"pipe",maintenance:true}],outputs:[{x:0,y:1,side:2,transport:"pipe",modes:["gas"]},{x:0,y:3,side:2,transport:"pipe",modes:["gas"]},{x:1,y:0,side:3,modes:["solid"]},{x:3,y:0,side:3,modes:["solid"]}]},
   gasReactor:{width:5,height:5,inputs:[{x:0,y:1,side:2,transport:"pipe"},{x:0,y:3,side:2,transport:"pipe"}],outputs:[{x:4,y:1,side:0,transport:"pipe"},{x:4,y:3,side:0,transport:"pipe"}]},
   splitter:{width:1,height:1,inputs:[{x:0,y:0,side:2}],outputs:[{x:0,y:0,side:0},{x:0,y:0,side:1},{x:0,y:0,side:3}]},
   merger:{width:1,height:1,inputs:[{x:0,y:0,side:2},{x:0,y:0,side:1},{x:0,y:0,side:3}],outputs:[{x:0,y:0,side:0}]},
@@ -514,7 +514,7 @@ function resolvePorts(grid:Grid):ResolvedPort[] {
       const rotated=rotatePort(spec,layout.width,layout.height,entity.rotation);
       const [dx,dy]=DELTAS[rotated.side];
       const cellX=minX+rotated.x,cellY=minY+rotated.y;
-      ports.push({key:`${entityId}:${type}:${index}`,entityId,entityKind:entity.kind,type,index,side:rotated.side,transport:spec.transport??"belt",cellX,cellY,externalX:cellX+dx,externalY:cellY+dy,outputIndex:spec.outputIndex});
+      ports.push({key:`${entityId}:${type}:${index}`,entityId,entityKind:entity.kind,type,index,side:rotated.side,transport:spec.transport??"belt",cellX,cellY,externalX:cellX+dx,externalY:cellY+dy,outputIndex:spec.outputIndex,maintenance:spec.maintenance});
     };
     layout.inputs.filter((port)=>!port.modes||Boolean(mode&&port.modes.includes(mode))).forEach((port,index)=>append(port,"input",index));
     layout.outputs.filter((port)=>!port.modes||Boolean(mode&&port.modes.includes(mode))).forEach((port,index)=>append(port,"output",index));
@@ -2323,14 +2323,15 @@ export default function Home() {
                         </span>
                       </span>:<b className="machine-visual"><AssetThumb src={tools.find((t) => t.kind === baseCell.kind)?.image} label={tools.find((t) => t.kind === baseCell.kind)?.label??"设备"}/></b>}
                       {baseCell.kind==="depot"&&<span className="depot-source">{depotItem?<><AssetThumb src={depotItem.image} label={depotItem.name}/><small>{depotItem.name}</small></>:<small>未选择物品</small>}</span>}{!machine&&baseCell.kind!=="powerPole"&&baseCell.kind!=="depot"&&cellWidth*cellHeight>1&&<span className="device-caption"><strong>{tools.find((tool)=>tool.kind===baseCell.kind)?.label}</strong><small>{cellWidth} × {cellHeight}</small></span>}{baseCell.kind==="powerPole"&&<span className="power-pole-label"><strong>供电桩</strong><small>12 × 12</small></span>}
-                    </span>}{cellPorts.filter((port)=>!hiddenDirectPortKeys.has(port.key)).map((port)=><span key={port.key} className={`port-marker ${port.type} ${port.transport} side-${port.side} ${snapCandidate?.key===port.key?"snap-target":""} ${isPortConnected(grid,pipeGrid,port,directlyConnectedPortKeys)?"connected":""}`} title={`${port.transport==="pipe"?"管道介质":"固体"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`} aria-label={`${port.transport==="pipe"?"管道介质":"固体"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`}><span className="port-icon" aria-hidden="true"><i/><b/></span></span>)}{baseCell.root && status === "waiting" && <span className="wait-ring" />}</>}
+                    </span>}{cellPorts.filter((port)=>!hiddenDirectPortKeys.has(port.key)).map((port)=>{const label=port.maintenance?"维护管道输入口":`${port.transport==="pipe"?"管道介质":"固体"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`;return <span key={port.key} className={`port-marker ${port.type} ${port.transport} side-${port.side} ${port.maintenance?"maintenance-port":""} ${snapCandidate?.key===port.key?"snap-target":""} ${isPortConnected(grid,pipeGrid,port,directlyConnectedPortKeys)?"connected":""}`} title={label} aria-label={label}><span className="port-icon" aria-hidden="true"><i/><b/></span></span>})}{baseCell.root && status === "waiting" && <span className="wait-ring" />}</>}
                     {transport&&<span className="transport-tooltip"><span>{routeForCell?.itemId?<AssetThumb src={transport.image} label={transport.name}/>:<i className="empty-item-icon">--</i>}<strong>{transport.kind==="pipe"?"管道":"传送带"} · {transport.name}</strong></span><small>当前流速 {transport.rate}/min · 占用 {transport.cargoCount}/{transport.capacity} 单位</small><small>线路 {routeForCell?.cells.length??0} 格 · 基准运输耗时 {transport.travelSeconds.toFixed(1)}s</small><small>额定吞吐 {transport.kind==="pipe"?PIPE_ITEMS_PER_MINUTE:BELT_ITEMS_PER_MINUTE}/min · {transport.kind==="pipe"?"每格缓存 4 单位":"每格最多 1 件"}</small>{routeForCell&&stalledRouteIds.has(routeForCell.id)&&<small>{transport.targetConnected?"下游库存已满 · 线路满载阻塞":"末端未接输入口 · 线路满载阻塞"}</small>}{transport.connected&&!transport.targetConnected&&!transport.full&&<small>已连接输出口 · 内容将在末端逐格堆积</small>}{!transport.connected&&<small>未连接设备输出口 · 不会生成内容</small>}{secondaryTransport&&<><span className="tooltip-layer"><strong>下层传送带 · {secondaryTransport.name}</strong></span><small>当前流速 {secondaryTransport.rate}/min · 占用 {secondaryTransport.cargoCount}/{secondaryTransport.capacity}</small><small>再次单击可在管道/传送带之间切换选择</small></>}</span>}
                   </button>;
               })}
               <div className="port-overlay" aria-label="设备输入输出口显示层">
                 {resolvedPorts.filter((port)=>!hiddenDirectPortKeys.has(port.key)).map((port)=>{
                   const left=port.cellX+(port.side===0?1-PORT_VISUAL_INSET:port.side===2?PORT_VISUAL_INSET:.5),top=port.cellY+(port.side===1?1-PORT_VISUAL_INSET:port.side===3?PORT_VISUAL_INSET:.5);
-                  return <span key={port.key} style={{left:`${left/cols*100}%`,top:`${top/rows*100}%`}} className={`port-marker global-port ${isLogistics(port.entityKind)?"compact-port":""} ${port.type} ${port.transport} side-${port.side} ${snapCandidate?.key===port.key?"snap-target":""} ${isPortConnected(grid,pipeGrid,port,directlyConnectedPortKeys)?"connected":""}`} title={`${port.transport==="pipe"?"液体":"固体"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`} aria-label={`${port.transport==="pipe"?"液体":"固体"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`}><span className="port-icon" aria-hidden="true"><i/><b/></span></span>;
+                  const label=port.maintenance?"维护管道输入口":`${port.transport==="pipe"?"液体":"固体"}${port.type==="input"?"输入口":"输出口"} ${port.index+1}`;
+                  return <span key={port.key} style={{left:`${left/cols*100}%`,top:`${top/rows*100}%`}} className={`port-marker global-port ${isLogistics(port.entityKind)?"compact-port":""} ${port.type} ${port.transport} side-${port.side} ${port.maintenance?"maintenance-port":""} ${snapCandidate?.key===port.key?"snap-target":""} ${isPortConnected(grid,pipeGrid,port,directlyConnectedPortKeys)?"connected":""}`} title={label} aria-label={label}><span className="port-icon" aria-hidden="true"><i/><b/></span></span>;
                 })}
               </div>
             </div>
