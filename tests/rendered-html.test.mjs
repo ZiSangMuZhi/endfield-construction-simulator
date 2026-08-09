@@ -355,7 +355,7 @@ test("supports layered belt and pipe planning with draggable facilities", async 
   assert.match(css, /\.item-picker-value\{[^}]*font-size:11px/);
   assert.match(css, /\.item-picker-options button>img/);
   assert.match(css, /\.item-picker-options\{position:fixed;z-index:100/);
-  assert.match(page, /molder:\{width:3,height:3,inputs:\[\.\.\.edgePorts\(3,2,0\),\{x:2,y:1,side:0,transport:"pipe",modes:\["gas"\]\}\]/);
+  assert.match(page, /molder:\{width:3,height:3,inputs:\[\.\.\.edgePorts\(3,2,0\),\{x:1,y:2,side:1,transport:"pipe",modes:\["gas"\]\}\],outputs:edgePorts\(3,0,2\)\}/);
   assert.match(css, /\.device-menu\{overscroll-behavior:contain\}/);
   assert.match(css, /\.pipe-fluid-segment/);
   assert.match(css, /\.grid-wrap\{[^}]*background:var\(--paper\)/);

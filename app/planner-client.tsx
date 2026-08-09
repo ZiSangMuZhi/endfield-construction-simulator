@@ -452,7 +452,7 @@ const EQUIPMENT_LAYOUTS: Partial<Record<Kind,EquipmentLayout>> = {
   refiner:{width:3,height:3,inputs:[...edgePorts(3,2,0),{x:1,y:2,side:1,transport:"pipe",modes:["fluid"]}],outputs:[...edgePorts(3,0,2),{x:1,y:0,side:3,transport:"pipe",modes:["fluid"]}]},
   crusher:{width:3,height:3,inputs:edgePorts(3,2,0),outputs:edgePorts(3,0,2)},
   fitter:{width:3,height:3,inputs:edgePorts(3,2,0),outputs:edgePorts(3,0,2)},
-  molder:{width:3,height:3,inputs:[...edgePorts(3,2,0),{x:2,y:1,side:0,transport:"pipe",modes:["gas"]}],outputs:edgePorts(3,0,2)},
+  molder:{width:3,height:3,inputs:[...edgePorts(3,2,0),{x:1,y:2,side:1,transport:"pipe",modes:["gas"]}],outputs:edgePorts(3,0,2)},
   filler:{width:4,height:6,inputs:[...edgePorts(6,2,0),{x:1,y:5,side:1,transport:"pipe",modes:["fluid","gas"]}],outputs:edgePorts(6,0,3)},
   dismantler:{width:4,height:6,inputs:[{x:0,y:2,side:2}],outputs:[{x:3,y:1,side:0,outputIndex:0},{x:3,y:4,side:0,transport:"pipe",outputIndex:1}]},
   sealer:{width:4,height:6,inputs:edgePorts(6,2,0),outputs:edgePorts(6,0,3)},
